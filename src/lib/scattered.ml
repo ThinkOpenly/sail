@@ -114,14 +114,6 @@ let patch_funcl_loc def_annot (FCL_aux (aux, (_, tannot))) = FCL_aux (aux, (def_
 
 let patch_mapcl_annot def_annot (MCL_aux (aux, (_, tannot))) = MCL_aux (aux, (def_annot, tannot))
 
-module PC_config = struct
-  type t = Type_check.tannot
-  let typ_of_t = Type_check.typ_of_tannot
-  let add_attribute l attr arg = Type_check.map_uannot (add_attribute l attr arg)
-end
-
-module PC = Pattern_completeness.Make (PC_config)
-
 let rec descatter' accumulator funcls mapcls = function
   (* For scattered functions we collect all the seperate function
      clauses until we find the last one, then we turn that function
@@ -202,7 +194,11 @@ let rec descatter' accumulator funcls mapcls = function
         match members with
         | [] -> raise (Reporting.err_general l "No clauses found for scattered enum type")
         | _ ->
-            let def_annot = add_def_attribute (gen_loc l) "no_enum_functions" "" def_annot in
+            let def_annot =
+              def_annot
+              |> add_def_attribute (gen_loc l) "no_enum_functions" ""
+              |> add_def_attribute (gen_loc l) "undefined_gen" "forbid"
+            in
             let accumulator =
               DEF_aux (DEF_type (TD_aux (TD_enum (id, members, false), (gen_loc l, Type_check.empty_tannot))), def_annot)
               :: accumulator

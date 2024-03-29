@@ -113,9 +113,14 @@ let is_number_char c =
 
 let rec fix_id remove_tick name =
   match name with
-  | "assert" | "lsl" | "lsr" | "asr" | "type" | "fun" | "function" | "raise" | "try" | "match" | "with" | "check"
-  | "field" | "LT" | "lt" | "lteq" | "GT" | "gt" | "gteq" | "EQ" | "eq" | "neq" | "integer" | "union" | "inter"
-  | "subset" | "zero_extend" | "sign_extend" | "zeros" | "B0" | "B1" | "Nothing" | "Just" ->
+  | "as" | "let" | "and" | "in" | "of" | "rec" | "module" | "rename" | "struct" | "end" | "open" | "import" | "include"
+  | "begin" | "val" | "class" | "instance" | "default_instance" | "indreln" | "forall" | "exists" | "inline"
+  | "lem_transform" | "IN" | "MEM" | "declare" | "infix" | "automatic" | "exhaustive" | "inexhaustive" | "ascii_rep"
+  | "compile_message" | "set_flag" | "termination_argument" | "pattern_match" | "right_assoc" | "left_assoc"
+  | "non_assoc" | "non_exec" | "special" | "target_rep" | "target_sorts" | "target_type" | "target_const" | "lemma"
+  | "theorem" | "do" | "witness" | "assert" | "lsl" | "lsr" | "asr" | "type" | "fun" | "function" | "raise" | "try"
+  | "match" | "with" | "check" | "field" | "LT" | "lt" | "lteq" | "GT" | "gt" | "gteq" | "EQ" | "eq" | "neq" | "integer"
+  | "union" | "inter" | "subset" | "zero_extend" | "sign_extend" | "zeros" | "B0" | "B1" | "Nothing" | "Just" | "not" ->
       name ^ "'"
   | _ ->
       if String.contains name '#' then fix_id remove_tick (String.concat "_" (Util.split_on_char '#' name))
@@ -393,6 +398,7 @@ let doc_typ_lem, doc_typ_lem_brackets, doc_atomic_typ_lem =
     | _ -> atomic_typ params_to_print atyp_needed ty
   and atomic_typ params_to_print atyp_needed (Typ_aux (t, l) as ty) =
     match t with
+    | Typ_id (Id_aux (Id "string_literal", _)) -> string "string"
     | Typ_id (Id_aux (Id "bool", _)) -> string "bool"
     | Typ_id (Id_aux (Id "bit", _)) -> string "bitU"
     | Typ_id id ->
@@ -1709,6 +1715,7 @@ let doc_def_lem effect_info params_to_print type_env (DEF_aux (aux, _) as def) =
   | DEF_type t_def ->
       if List.mem (string_of_id (id_of_type_def t_def)) !opt_extern_types then empty
       else group (doc_typdef_lem params_to_print type_env t_def) ^/^ hardline
+  | DEF_constraint _ -> unreachable (def_loc def) __POS__ "Toplevel constraint not supported by lem backend"
   | DEF_register dec -> group (doc_dec_lem dec)
   | DEF_default df -> empty
   | DEF_fundef fdef -> group (doc_fundef_lem effect_info params_to_print type_env fdef) ^/^ hardline

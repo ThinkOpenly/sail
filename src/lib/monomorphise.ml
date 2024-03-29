@@ -137,7 +137,7 @@ let rec typeclass_nexps (Typ_aux (t, l)) =
   )
   else NexpSet.empty
 
-let size_set_limit = 64
+let opt_size_set_limit = ref 128
 
 let optmap v f = match v with None -> None | Some v -> Some (f v)
 
@@ -202,31 +202,45 @@ let extract_set_nc env l var nc =
   (* Lazily expand constraints to keep close to the original form *)
   let rec aux expanded (NC_aux (nc, l) as nc_full) =
     let re nc = NC_aux (nc, l) in
+
+    (* Turn (i <= 'v & 'v <= j & ...) into set constraint ('v in {i..j}) *)
+    let handle_range n kid nc1 nc2 =
+      let aux2 () =
+        match aux expanded nc2 with Some (is, nc2') -> Some (is, re (NC_and (nc1, nc2'))) | None -> None
+      in
+      let handle' n' kid' ncs =
+        let len = Big_int.succ (Big_int.sub n' n) in
+        if Big_int.less_equal Big_int.zero len && Big_int.less_equal len (Big_int.of_int !opt_size_set_limit) then (
+          let elem i = Big_int.add n (Big_int.of_int i) in
+          let is = List.init (Big_int.to_int len) elem in
+          if aux expanded (List.fold_left nc_and nc_true ncs) <> None then
+            raise (Reporting.err_general l ("Multiple set constraints for " ^ string_of_kid var))
+          else Some (is, nc_full)
+        )
+        else aux2 ()
+      in
+      begin
+        match constraint_conj nc2 with
+        | NC_aux (NC_bounded_le (Nexp_aux (Nexp_var kid', _), Nexp_aux (Nexp_constant n', _)), _) :: ncs
+          when KidSet.mem kid' vars ->
+            handle' n' kid' ncs
+        | NC_aux (NC_bounded_lt (Nexp_aux (Nexp_var kid', _), Nexp_aux (Nexp_constant n', _)), _) :: ncs
+          when KidSet.mem kid' vars ->
+            handle' (Nat_big_num.pred n') kid' ncs
+        | _ -> aux2 ()
+      end
+    in
+
     match nc with
-    | NC_set (id, is) when KidSet.mem id vars -> Some (is, re NC_true)
+    | NC_set (Nexp_aux (Nexp_var id, _), is) when KidSet.mem id vars -> Some (is, re NC_true)
     | NC_equal (Nexp_aux (Nexp_var id, _), Nexp_aux (Nexp_constant n, _)) when KidSet.mem id vars ->
         Some ([n], re NC_true)
-    (* Turn (i <= 'v & 'v <= j & ...) into set constraint ('v in {i..j}) *)
     | NC_and ((NC_aux (NC_bounded_le (Nexp_aux (Nexp_constant n, _), Nexp_aux (Nexp_var kid, _)), _) as nc1), nc2)
       when KidSet.mem kid vars ->
-        let aux2 () =
-          match aux expanded nc2 with Some (is, nc2') -> Some (is, re (NC_and (nc1, nc2'))) | None -> None
-        in
-        begin
-          match constraint_conj nc2 with
-          | NC_aux (NC_bounded_le (Nexp_aux (Nexp_var kid', _), Nexp_aux (Nexp_constant n', _)), _) :: ncs
-            when KidSet.mem kid' vars ->
-              let len = Big_int.succ (Big_int.sub n' n) in
-              if Big_int.less_equal Big_int.zero len && Big_int.less_equal len (Big_int.of_int size_set_limit) then (
-                let elem i = Big_int.add n (Big_int.of_int i) in
-                let is = List.init (Big_int.to_int len) elem in
-                if aux expanded (List.fold_left nc_and nc_true ncs) <> None then
-                  raise (Reporting.err_general l ("Multiple set constraints for " ^ string_of_kid var))
-                else Some (is, nc_full)
-              )
-              else aux2 ()
-          | _ -> aux2 ()
-        end
+        handle_range n kid nc1 nc2
+    | NC_and ((NC_aux (NC_bounded_lt (Nexp_aux (Nexp_constant n, _), Nexp_aux (Nexp_var kid, _)), _) as nc1), nc2)
+      when KidSet.mem kid vars ->
+        handle_range (Nat_big_num.succ n) kid nc1 nc2
     | NC_and (nc1, nc2) -> (
         match (aux expanded nc1, aux expanded nc2) with
         | None, None -> None
@@ -281,6 +295,7 @@ let rec size_nvars_nexp (Nexp_aux (ne, _)) =
   | Nexp_times (n1, n2) | Nexp_sum (n1, n2) | Nexp_minus (n1, n2) -> size_nvars_nexp n1 @ size_nvars_nexp n2
   | Nexp_exp n | Nexp_neg n -> size_nvars_nexp n
   | Nexp_app (_, args) -> List.concat (List.map size_nvars_nexp args)
+  | Nexp_if (_, t, e) -> size_nvars_nexp t @ size_nvars_nexp e
 
 (* Given a type for a constructor, work out which refinements we ought to produce *)
 (* TODO collision avoidance *)
@@ -365,10 +380,10 @@ let split_src_type all_errors env id ty (TypQ_aux (q, ql)) =
   | [] -> None
   | [(l, _)] when List.for_all (function _, None -> true | _ -> false) l -> None
   | sample :: _ ->
-      if List.length variants > size_set_limit then
+      if List.length variants > !opt_size_set_limit then
         cannot ql
           (string_of_int (List.length variants)
-          ^ "variants for constructor " ^ i ^ "bigger than limit " ^ string_of_int size_set_limit
+          ^ "variants for constructor " ^ i ^ "bigger than limit " ^ string_of_int !opt_size_set_limit
           )
           None
       else (
@@ -772,7 +787,7 @@ let split_defs target all_errors (splits : split_req list) env ast =
             let sz = Big_int.to_int sz in
             let num_lits = Big_int.pow_int (Big_int.of_int 2) sz in
             (* Check that split size is within limits before generating the list of literals *)
-            if Big_int.less_equal num_lits (Big_int.of_int size_set_limit) then (
+            if Big_int.less_equal num_lits (Big_int.of_int !opt_size_set_limit) then (
               let lits = make_vectors sz in
               (* Some parts of Sail don't recognise complete bitvector
                  matches, so make the last one a wildcard. *)
@@ -1032,10 +1047,10 @@ let split_defs target all_errors (splits : split_req list) env ast =
 
     let check_split_size lst l =
       let size = List.length lst in
-      if size > size_set_limit then
+      if size > !opt_size_set_limit then
         let open Reporting in
         let error_msg =
-          "Case split is too large (" ^ string_of_int size ^ " > limit " ^ string_of_int size_set_limit ^ ")"
+          "Case split is too large (" ^ string_of_int size ^ " > limit " ^ string_of_int !opt_size_set_limit ^ ")"
         in
         if all_errors then (
           no_errors_happened := false;
@@ -1241,8 +1256,8 @@ let split_defs target all_errors (splits : split_req list) env ast =
     let map_def idx (DEF_aux (aux, def_annot) as def) =
       Util.progress "Monomorphising " (string_of_int idx ^ "/" ^ string_of_int num_defs) idx num_defs;
       match aux with
-      | DEF_type _ | DEF_val _ | DEF_default _ | DEF_register _ | DEF_overload _ | DEF_fixity _ | DEF_pragma _
-      | DEF_internal_mutrec _ ->
+      | DEF_type _ | DEF_constraint _ | DEF_val _ | DEF_default _ | DEF_register _ | DEF_overload _ | DEF_fixity _
+      | DEF_pragma _ | DEF_internal_mutrec _ ->
           [def]
       | DEF_fundef fd -> [DEF_aux (DEF_fundef (map_fundef fd), def_annot)]
       | DEF_let lb -> [DEF_aux (DEF_let (map_letbind lb), def_annot)]
@@ -1745,7 +1760,11 @@ module Analysis = struct
     let compare = compare
   end)
 
-  type dependencies = Have of arg_splits * extra_splits * let_binding_splits | Unknown of Parse_ast.l * string
+  (* When we've obviously got a tuple, keep the elements separate *)
+  type dependencies =
+    | Have of arg_splits * extra_splits * let_binding_splits
+    | Tuple of dependencies list
+    | Unknown of Parse_ast.l * string
 
   let string_of_match_detail = function
     | Total -> "[total]"
@@ -1785,10 +1804,11 @@ module Analysis = struct
   let string_of_callerkidset s =
     String.concat ", " (List.map (fun (id, kid) -> string_of_id id ^ "." ^ string_of_kid kid) (CallerKidSet.elements s))
 
-  let string_of_dep = function
+  let rec string_of_dep = function
     | Have (args, extras, letbinds) ->
         "Have (" ^ string_of_argsplits args ^ ";" ^ string_of_extra_splits extras ^ ";"
         ^ string_of_let_binding_splits letbinds ^ ")"
+    | Tuple deps -> "[" ^ String.concat ", " (List.map string_of_dep deps) ^ "]"
     | Unknown (l, msg) -> "Unknown " ^ msg ^ " at " ^ Reporting.loc_to_string l
 
   (* If a callee uses a type variable as a size, does it need to be split in the
@@ -1840,15 +1860,26 @@ module Analysis = struct
 
   let merge_extras = ExtraSplits.merge (opt_merge (KBindings.merge merge_detail))
 
-  let dmerge x y =
+  let rec dmerge x y =
     match (x, y) with
     | Unknown (l, s), _ -> Unknown (l, s)
     | _, Unknown (l, s) -> Unknown (l, s)
     | Have (args, extras, lets), Have (args', extras', lets') ->
         Have
           (ArgSplits.merge merge_detail args args', merge_extras extras extras', LetSplits.merge merge_detail lets lets')
+    | Tuple xs, Tuple ys -> Tuple (List.map2 dmerge xs ys)
+    (* Flatten when one side isn't a tuple *)
+    | Tuple ds, d | d, Tuple ds -> List.fold_left dmerge d ds
 
   let dempty = Have (ArgSplits.empty, ExtraSplits.empty, LetSplits.empty)
+
+  let flatten_deps d =
+    match d with
+    | Have _ -> d
+    | Unknown _ -> d
+    | Tuple [] -> dempty
+    | Tuple [d'] -> d'
+    | Tuple (d' :: ds) -> List.fold_left dmerge d' ds
 
   let dep_bindings_merge a1 a2 = Bindings.merge (opt_merge dmerge) a1 a2
 
@@ -1988,7 +2019,7 @@ module Analysis = struct
     KidSet.fold check kids dempty
 
   let deps_of_nexp l kid_deps arg_deps nexp =
-    let kids = nexp_frees nexp in
+    let kids = tyvars_of_nexp nexp in
     deps_of_tyvars l kid_deps arg_deps kids
 
   let rec deps_of_nc kid_deps (NC_aux (nc, l)) =
@@ -2000,16 +2031,12 @@ module Analysis = struct
     | NC_bounded_lt (nexp1, nexp2)
     | NC_not_equal (nexp1, nexp2) ->
         dmerge (deps_of_nexp l kid_deps [] nexp1) (deps_of_nexp l kid_deps [] nexp2)
-    | NC_set (kid, _) -> (
-        match KBindings.find kid kid_deps with
-        | deps -> deps
-        | exception Not_found -> Unknown (l, "Unknown type variable in constraint " ^ string_of_kid kid)
-      )
+    | NC_set (nexp, _) -> deps_of_nexp l kid_deps [] nexp
     | NC_or (nc1, nc2) | NC_and (nc1, nc2) -> dmerge (deps_of_nc kid_deps nc1) (deps_of_nc kid_deps nc2)
     | NC_true | NC_false -> dempty
     | NC_app (Id_aux (Id "mod", _), [A_aux (A_nexp nexp1, _); A_aux (A_nexp nexp2, _)]) ->
         dmerge (deps_of_nexp l kid_deps [] nexp1) (deps_of_nexp l kid_deps [] nexp2)
-    | NC_var _ | NC_app _ -> dempty
+    | NC_id _ | NC_var _ | NC_app _ -> dempty
 
   and deps_of_typ l kid_deps arg_deps typ = deps_of_tyvars l kid_deps arg_deps (tyvars_of_typ typ)
 
@@ -2087,7 +2114,7 @@ module Analysis = struct
             )
           | _ -> None
         end
-      | Unknown _ -> None
+      | _ -> None
       | exception Not_found -> None
     in
     match e with
@@ -2166,9 +2193,9 @@ module Analysis = struct
      and dependencies on mutable variables.  The latter are quite conservative,
      we currently drop variables assigned inside loops, for example. *)
 
-  let rec analyse_exp fn_id effect_info env assigns (E_aux (e, (l, annot)) as exp) =
-    let analyse_sub = analyse_exp fn_id effect_info in
-    let analyse_lexp = analyse_lexp fn_id effect_info in
+  let rec analyse_exp debug fn_id effect_info env assigns (E_aux (e, (l, annot)) as exp) =
+    let analyse_sub = analyse_exp debug fn_id effect_info in
+    let analyse_lexp = analyse_lexp debug fn_id effect_info in
     let remove_assigns es message =
       let assigned = assigned_vars_exps es in
       IdSet.fold (fun id asn -> Bindings.add id (Unknown (l, string_of_id id ^ message)) asn) assigned assigns
@@ -2202,7 +2229,11 @@ module Analysis = struct
       | Some (Nexp_aux (Nexp_var kid, _)) -> List.exists (fun k -> Kid.compare k kid == 0) env.top_kids
       | _ -> false
     in
-    let merge_deps deps = List.fold_left dmerge dempty deps in
+    let merge_deps = function [] -> dempty | d :: ds -> List.fold_left dmerge d ds in
+    let rec add_dep_respecting_tuples d = function
+      | Tuple ds -> Tuple (List.map (add_dep_respecting_tuples d) ds)
+      | d' -> dmerge d d'
+    in
     let deps, assigns, r =
       match e with
       | E_block es ->
@@ -2247,6 +2278,11 @@ module Analysis = struct
         end
       | E_lit _ -> (dempty, assigns, empty)
       | E_typ (_, e) -> analyse_sub env assigns e
+      | E_app (id, args) when string_of_id id = "bitvector_length" -> begin
+          match destruct_atom_nexp (env_of_annot (l, annot)) (typ_of_annot (l, annot)) with
+          | Some nexp -> (deps_of_nexp l env.kid_deps [] nexp, assigns, empty)
+          | None -> (Unknown (l, "bitvector_length with bad type"), assigns, empty)
+        end
       | E_app (id, args) ->
           let typ_env = env_of_annot (l, annot) in
           let _, fn_typ = Env.get_val_spec_orig id typ_env in
@@ -2277,7 +2313,10 @@ module Analysis = struct
             else (dempty, { empty with split_on_call = Bindings.singleton id kid_deps })
           in
           (merge_deps (rdep :: eff_dep :: deps), assigns, merge r r')
-      | E_tuple es | E_list es ->
+      | E_tuple es ->
+          let deps, assigns, r = non_det es in
+          (Tuple deps, assigns, r)
+      | E_list es ->
           let deps, assigns, r = non_det es in
           (merge_deps deps, assigns, r)
       | E_if (e1, e2, e3) ->
@@ -2340,29 +2379,22 @@ module Analysis = struct
                 (dmerge d1 d2, assigns, merge r1 r2)
           in
           let ds, assigns, rs = split3 (List.map analyse_case cases) in
-          (merge_deps (deps :: ds), List.fold_left dep_bindings_merge Bindings.empty assigns, List.fold_left merge r rs)
+          let deps = add_dep_respecting_tuples deps (merge_deps ds) in
+          (deps, List.fold_left dep_bindings_merge Bindings.empty assigns, List.fold_left merge r rs)
       | E_let (LB_aux (LB_val (pat, e1), (lb_l, _)), e2) ->
           let d1, assigns, r1 = analyse_sub env assigns e1 in
-          let unknown_deps = match d1 with Unknown _ -> true | Have _ -> false in
-          let d =
-            (* As a special case, detect
-                 let 'size = if ... then 'typaram1 else 'typaram2;
-               where we can reduce the dependencies of 'size to the guard. *)
-            match (pat, e1) with
-            | ( P_aux (P_var (P_aux (P_id id, _), TP_aux (TP_var kid, _)), _),
-                E_aux (E_if (guard_exp, E_aux (E_id id1, annot1), E_aux (E_id id2, annot2)), _) )
-              when is_toplevel_int annot1 && is_toplevel_int annot2 ->
-                let guard_deps, _, _ = analyse_sub env assigns guard_exp in
-                guard_deps
+          let rec update_env_subpat env pat d =
+            match (pat, d) with
             (* Add a new case split after the let if necessary *)
             (* Potential improvements: match on more patterns (e.g. tuples);
                allow disjunctions of equalities as well as set constraints;
                allow set constraint to be part of a larger constraint. *)
-            | P_aux ((P_id id | P_var (P_aux (P_id id, _), _)), _), _ when unknown_deps && useful_loc lb_l ->
+            | P_aux (P_typ (_, pat), _), _ -> update_env_subpat env pat d
+            | P_aux ((P_id id | P_var (P_aux (P_id id, _), _)), _), Unknown _ when useful_loc lb_l ->
                 let l' = Generated l in
                 let split =
                   match typ_of e1 with
-                  | Typ_aux (Typ_exist ([kdid], NC_aux (NC_set (kid, sizes), _), typ), _)
+                  | Typ_aux (Typ_exist ([kdid], NC_aux (NC_set (Nexp_aux (Nexp_var kid, _), sizes), _), typ), _)
                     when Kid.compare (kopt_kid kdid) kid == 0 -> begin
                       match Type_check.destruct_atom_nexp (env_of e1) typ with
                       | Some nexp when Nexp.compare (nvar kid) nexp == 0 ->
@@ -2377,7 +2409,11 @@ module Analysis = struct
                       begin
                         match
                           Util.find_map
-                            (function NC_aux (NC_set (kid'', is), _) when KidSet.mem kid'' vars -> Some is | _ -> None)
+                            (function
+                              | NC_aux (NC_set (Nexp_aux (Nexp_var kid'', _), is), _) when KidSet.mem kid'' vars ->
+                                  Some is
+                              | _ -> None
+                              )
                             constraints
                         with
                         | Some sizes ->
@@ -2387,10 +2423,24 @@ module Analysis = struct
                       end
                   | _ -> Total
                 in
-                Have (ArgSplits.empty, ExtraSplits.empty, LetSplits.singleton (id, lb_l) split)
-            | _, _ -> d1
+                let d' = Have (ArgSplits.empty, ExtraSplits.empty, LetSplits.singleton (id, lb_l) split) in
+                update_env env d' pat (env_of_annot (l, annot)) (env_of e2)
+            | P_aux (P_tuple pats, _), Tuple deps when List.length deps == List.length pats ->
+                List.fold_left2 update_env_subpat env pats deps
+            | _ -> update_env env d pat (env_of_annot (l, annot)) (env_of e2)
           in
-          let env = update_env env d pat (env_of_annot (l, annot)) (env_of e2) in
+          let env =
+            (* As a special case, detect
+                 let 'size = if ... then 'typaram1 else 'typaram2;
+               where we can reduce the dependencies of 'size to the guard. *)
+            match (pat, e1) with
+            | ( P_aux (P_var (P_aux (P_id id, _), TP_aux (TP_var kid, _)), _),
+                E_aux (E_if (guard_exp, E_aux (E_id id1, annot1), E_aux (E_id id2, annot2)), _) )
+              when is_toplevel_int annot1 && is_toplevel_int annot2 ->
+                let guard_deps, _, _ = analyse_sub env assigns guard_exp in
+                update_env env guard_deps pat (env_of_annot (l, annot)) (env_of e2)
+            | _ -> update_env_subpat env pat d1
+          in
           let d2, assigns, r2 = analyse_sub env assigns e2 in
           (d2, assigns, merge r1 r2)
       (* There's a more general assignment case above to update env inside a block. *)
@@ -2398,6 +2448,8 @@ module Analysis = struct
           let d1, assigns, r1 = analyse_sub env assigns e1 in
           let assigns, r2 = analyse_lexp env assigns d1 lexp in
           (dempty, assigns, merge r1 r2)
+      (* Currently this case isn't used because E_sizeof is rewritten by the typechecker, see
+         the bitvector_length case above instead. *)
       | E_sizeof nexp -> (deps_of_nexp l env.kid_deps [] nexp, assigns, empty)
       | E_return e | E_exit e | E_throw e ->
           let _, _, r = analyse_sub env assigns e in
@@ -2470,8 +2522,11 @@ module Analysis = struct
               | Nexp_constant _ -> r
               | Nexp_var v when is_tyvar_parameter v ->
                   { r with kid_in_caller = CallerKidSet.add (fn_id, v) r.kid_in_caller }
-              | _ -> (
-                  match deps_of_nexp l env.kid_deps [] size_nexp with
+              | _ -> begin
+                  if debug > 2 then
+                    print_endline
+                      ("  Need size " ^ string_of_nexp size_nexp ^ " at location " ^ Reporting.loc_to_string l);
+                  match flatten_deps (deps_of_nexp l env.kid_deps [] size_nexp) with
                   | Have (args, extras, lets) ->
                       {
                         r with
@@ -2487,7 +2542,8 @@ module Analysis = struct
                             (StringSet.singleton ("Unable to monomorphise " ^ string_of_nexp size_nexp ^ ": " ^ msg))
                             r.failures;
                       }
-                )
+                  | Tuple _ -> assert false
+                end
             )
             else (
               match typ with
@@ -2499,9 +2555,9 @@ module Analysis = struct
     in
     (deps, assigns, r)
 
-  and analyse_lexp fn_id effect_info env assigns deps (LE_aux (lexp, (l, _))) =
-    let analyse_sub = analyse_exp fn_id effect_info in
-    let analyse_lexp = analyse_lexp fn_id effect_info in
+  and analyse_lexp debug fn_id effect_info env assigns deps (LE_aux (lexp, (l, _))) =
+    let analyse_sub = analyse_exp debug fn_id effect_info in
+    let analyse_lexp = analyse_lexp debug fn_id effect_info in
     (* TODO: maybe subexps and sublexps should be non-det (and in const_prop_lexp, too?) *)
     match lexp with
     | LE_id id | LE_typ (_, id) ->
@@ -2559,7 +2615,7 @@ module Analysis = struct
     let qs = match tq with TypQ_no_forall -> [] | TypQ_tq qs -> qs in
     let eqn_instantiations = Type_check.instantiate_simple_equations qs in
     let eqn_kid_deps =
-      KBindings.map (function A_aux (A_nexp nexp, _) -> Some (nexp_frees nexp) | _ -> None) eqn_instantiations
+      KBindings.map (function A_aux (A_nexp nexp, _) -> Some (tyvars_of_nexp nexp) | _ -> None) eqn_instantiations
     in
     let arg i pat =
       let rec aux (P_aux (p, (l, annot))) =
@@ -2711,7 +2767,7 @@ module Analysis = struct
     let rec sets_from_nc (NC_aux (nc, l) as nc_full) =
       match nc with
       | NC_and (nc1, nc2) -> merge_set_asserts_by_kid (sets_from_nc nc1) (sets_from_nc nc2)
-      | NC_set (kid, is) -> KBindings.singleton kid (l, is)
+      | NC_set (Nexp_aux (Nexp_var kid, _), is) -> KBindings.singleton kid (l, is)
       | NC_equal (Nexp_aux (Nexp_var kid, _), Nexp_aux (Nexp_constant n, _)) -> KBindings.singleton kid (l, [n])
       | NC_or _ -> (
           match set_from_nc_or nc_full with
@@ -2790,12 +2846,12 @@ module Analysis = struct
     let set_assertions = find_set_assertions body in
     let _ = if debug > 2 then print_set_assertions set_assertions in
     let aenv = initial_env id l tq pat body set_assertions constants in
-    let _, _, r = analyse_exp id effect_info aenv Bindings.empty body in
+    let _, _, r = analyse_exp debug id effect_info aenv Bindings.empty body in
     let r =
       match guard with
       | None -> r
       | Some exp ->
-          let _, _, r' = analyse_exp id effect_info aenv Bindings.empty exp in
+          let _, _, r' = analyse_exp debug id effect_info aenv Bindings.empty exp in
           let r' =
             if ExtraSplits.is_empty r'.extra_splits then r'
             else
@@ -2844,7 +2900,8 @@ module Analysis = struct
     let _ = Util.progress "Analysing " "done" total_defs total_defs in
 
     (* Resolve the interprocedural dependencies *)
-    let rec separate_deps = function
+    let rec separate_deps d =
+      match flatten_deps d with
       | Have (splits, extras, lets) -> (splits, extras, lets, Failures.empty)
       | Unknown (l, msg) ->
           ( ArgSplits.empty,
@@ -2852,6 +2909,7 @@ module Analysis = struct
             LetSplits.empty,
             Failures.singleton l (StringSet.singleton ("Unable to monomorphise dependency: " ^ msg))
           )
+      | Tuple _ -> assert false
     and chase_kid_caller (id, kid) =
       match Bindings.find id r.split_on_call with
       | kid_deps -> begin
@@ -2983,6 +3041,12 @@ module MonoRewrites = struct
     let is_slice = is_id env (Id "slice") in
     let is_zeros id = is_zeros env id in
     let is_ones id = is_id env (Id "Ones") id || is_id env (Id "ones") id || is_id env (Id "sail_ones") id in
+    let is_ones_lit str =
+      (* String.for_all requires a newer version of OCaml than our current minimum *)
+      let rec aux i = if str.[i] = '1' then if i = 0 then true else aux (i - 1) else false in
+      let len = String.length str in
+      if len = 0 then false else aux (len - 1)
+    in
     let is_zero_extend = is_zero_extend env id in
     let is_sign_extend =
       is_id env (Id "SignExtend") id || is_id env (Id "sign_extend") id || is_id env (Id "sail_sign_extend") id
@@ -3127,7 +3191,47 @@ module MonoRewrites = struct
         when is_ones ones1 && is_zeros_exp zeros_exp
              && not (is_constant len1 && is_constant_vec_typ env (typ_of zeros_exp)) -> begin
           match get_zeros_exp_len zeros_exp with
-          | Some zlen -> try_cast_to_typ (mk_exp (E_app (mk_id "slice_mask", [zlen; len1])))
+          | Some zlen ->
+              (* Give the length explicitly rather than relying on the context;
+                 it might not be sufficiently constrained. *)
+              let total = mk_exp (E_app_infix (zlen, mk_id "+", len1)) in
+              try_cast_to_typ (mk_exp (E_app (mk_id "slice_mask", [total; zlen; len1])))
+          | None -> E_app (id, args)
+        end
+      | [E_aux (E_lit (L_aux (L_bin lit, _)), _); zeros_exp]
+        when is_ones_lit lit && is_zeros_exp zeros_exp && not (is_constant_vec_typ env (typ_of zeros_exp)) -> begin
+          match get_zeros_exp_len zeros_exp with
+          | Some zlen ->
+              (* Give the length explicitly rather than relying on the context;
+                 it might not be sufficiently constrained. *)
+              let len1 = mk_exp (E_lit (L_aux (L_num (Nat_big_num.of_int (String.length lit)), Unknown))) in
+              let total = mk_exp (E_app_infix (zlen, mk_id "+", len1)) in
+              try_cast_to_typ (mk_exp (E_app (mk_id "slice_mask", [total; zlen; len1])))
+          | None -> E_app (id, args)
+        end
+      (* zeros @ ones *)
+      | [zeros_exp; E_aux (E_app (ones2, [len2]), _)]
+        when is_ones ones2 && is_zeros_exp zeros_exp
+             && not (is_constant len2 && is_constant_vec_typ env (typ_of zeros_exp)) -> begin
+          match get_zeros_exp_len zeros_exp with
+          | Some zlen ->
+              (* Give the length explicitly rather than relying on the context;
+                 it might not be sufficiently constrained. *)
+              let total = mk_exp (E_app_infix (zlen, mk_id "+", len2)) in
+              let zero = mk_exp (E_lit (mk_lit (L_num Nat_big_num.zero))) in
+              try_cast_to_typ (mk_exp (E_app (mk_id "slice_mask", [total; zero; len2])))
+          | None -> E_app (id, args)
+        end
+      | [zeros_exp; E_aux (E_lit (L_aux (L_bin lit, _)), _)]
+        when is_ones_lit lit && is_zeros_exp zeros_exp && not (is_constant_vec_typ env (typ_of zeros_exp)) -> begin
+          match get_zeros_exp_len zeros_exp with
+          | Some zlen ->
+              (* Give the length explicitly rather than relying on the context;
+                 it might not be sufficiently constrained. *)
+              let len2 = mk_exp (E_lit (L_aux (L_num (Nat_big_num.of_int (String.length lit)), Unknown))) in
+              let total = mk_exp (E_app_infix (zlen, mk_id "+", len2)) in
+              let zero = mk_exp (E_lit (mk_lit (L_num Nat_big_num.zero))) in
+              try_cast_to_typ (mk_exp (E_app (mk_id "slice_mask", [total; zero; len2])))
           | None -> E_app (id, args)
         end
       (* ones @ variable *)
@@ -4282,6 +4386,7 @@ module ToplevelNexpRewrites = struct
       | Nexp_exp n -> "exp_" ^ mangle_nexp n
       | Nexp_neg n -> "neg_" ^ mangle_nexp n
       | Nexp_app (id, args) -> string_of_id id ^ "_" ^ String.concat "_" (List.map mangle_nexp args)
+      | Nexp_if (_, t, e) -> mangle_nexp t ^ "_or_" ^ mangle_nexp e
     in
     (* TODO: I'd like to add a # to distinguish it from user-provided names, but
        the rewriter currently uses them as a hint that they're not printable in
@@ -4556,6 +4661,7 @@ module ToplevelNexpRewrites = struct
       | TD_abbrev (id, typq, A_aux (A_typ typ, l)) ->
           TD_aux (TD_abbrev (id, typq, A_aux (A_typ (expand_type typ), l)), annot)
       | TD_abbrev (id, typq, typ_arg) -> TD_aux (TD_abbrev (id, typq, typ_arg), annot)
+      | TD_abstract (id, kind) -> TD_aux (TD_abstract (id, kind), annot)
       | TD_record (id, typq, typ_ids, flag) ->
           TD_aux (TD_record (id, typq, List.map (fun (typ, id) -> (expand_type typ, id)) typ_ids, flag), annot)
       | TD_variant (id, typq, tus, flag) -> TD_aux (TD_variant (id, typq, List.map rw_union tus, flag), annot)

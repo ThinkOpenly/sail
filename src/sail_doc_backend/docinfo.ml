@@ -85,23 +85,7 @@ let docinfo_version = 1
 
 let same_file f1 f2 = Filename.basename f1 = Filename.basename f2 && Filename.dirname f1 = Filename.dirname f2
 
-let process_file f filename =
-  let chan = open_in filename in
-  let buf = Buffer.create 4096 in
-  try
-    let rec loop () =
-      let line = input_line chan in
-      Buffer.add_string buf line;
-      Buffer.add_char buf '\n';
-      loop ()
-    in
-    loop ()
-  with End_of_file ->
-    close_in chan;
-    f (Buffer.contents buf)
-
-let read_source (p1 : Lexing.position) (p2 : Lexing.position) =
-  process_file (fun contents -> String.sub contents p1.pos_cnum (p2.pos_cnum - p1.pos_cnum)) p1.pos_fname
+let process_file f filename = f (Util.read_whole_file filename)
 
 let hash_file filename = process_file Digest.string filename |> Digest.to_hex
 
@@ -394,14 +378,16 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
 
   let embedding_format () = match Config.embedding_mode with Some Plain | None -> Plain | Some Base64 -> Base64
 
-  let doc_lexing_pos p1 p2 =
+  let doc_lexing_pos (p1 : Lexing.position) (p2 : Lexing.position) =
     match Config.embedding_mode with
-    | Some _ -> Raw (read_source p1 p2 |> encode)
+    | Some _ -> Raw (Reporting.loc_range_to_src p1 p2 |> encode)
     | None -> Location (p1.pos_fname, p1.pos_lnum, p1.pos_bol, p1.pos_cnum, p2.pos_lnum, p2.pos_bol, p2.pos_cnum)
 
   let doc_loc l g f x =
     match Reporting.simp_loc l with
-    | Some (p1, p2) when p1.pos_fname = p2.pos_fname && Filename.is_relative p1.pos_fname -> doc_lexing_pos p1 p2
+    | Some (p1, p2)
+      when p1.pos_fname = p2.pos_fname && Filename.is_relative p1.pos_fname && Sys.file_exists p1.pos_fname ->
+        doc_lexing_pos p1 p2
     | _ -> Raw (g x |> f |> Pretty_print_sail.to_string |> encode)
 
   let get_doc_comment def_annot =
@@ -529,6 +515,9 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
   let docinfo_for_mpexp (MPat_aux (aux, _)) =
     match aux with MPat_pat mpat -> pat_of_mpat mpat | MPat_when (mpat, _) -> pat_of_mpat mpat
 
+  let docinfo_for_pexp (Pat_aux (aux, _)) =
+    match aux with Pat_exp (pat, body) -> (pat, body) | Pat_when (pat, _, body) -> (pat, body)
+
   let docinfo_for_mapcl n (MCL_aux (aux, (def_annot, _)) as clause) =
     let source = doc_loc def_annot.loc Type_check.strip_mapcl Pretty_print_sail.doc_mapcl clause in
     let wavedrom_attr = find_attribute_opt "wavedrom" def_annot.attrs in
@@ -541,13 +530,13 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
           let right = docinfo_for_mpexp right in
           let right_wavedrom = Wavedrom.of_pattern ~labels:wavedrom_attr right in
           (Some left, left_wavedrom, Some right, right_wavedrom, None)
-      | MCL_forwards (left, body) ->
-          let left = docinfo_for_mpexp left in
+      | MCL_forwards pexp ->
+          let left, body = docinfo_for_pexp pexp in
           let left_wavedrom = Wavedrom.of_pattern ~labels:wavedrom_attr left in
           let body = doc_loc (exp_loc body) Type_check.strip_exp Pretty_print_sail.doc_exp body in
           (Some left, left_wavedrom, None, None, Some body)
-      | MCL_backwards (right, body) ->
-          let right = docinfo_for_mpexp right in
+      | MCL_backwards pexp ->
+          let right, body = docinfo_for_pexp pexp in
           let right_wavedrom = Wavedrom.of_pattern ~labels:wavedrom_attr right in
           let body = doc_loc (exp_loc body) Type_check.strip_exp Pretty_print_sail.doc_exp body in
           (None, None, Some right, right_wavedrom, Some body)
@@ -677,6 +666,7 @@ module Generator (Converter : Markdown.CONVERTER) (Config : CONFIG) = struct
           | DEF_pragma ("span", arg, _) when arg = "end" -> begin
               match !current_span with
               | Some (name, start_l) ->
+                  current_span := None;
                   let end_l = def_annot.loc in
                   begin
                     match (Reporting.simp_loc start_l, Reporting.simp_loc end_l) with

@@ -113,8 +113,8 @@ let rec is_value (E_aux (e, (l, annot))) =
   | E_app (id, es) -> is_constructor id && List.for_all is_value es
   (* We add casts to undefined to keep the type information in the AST *)
   | E_typ (typ, E_aux (E_lit (L_aux (L_undef, _)), _)) -> true
-  (* Also keep casts around records, as type inference fails without *)
-  | E_typ (_, (E_aux (E_struct _, _) as e')) -> is_value e'
+  (* Also keep casts around, as type inference fails without (e.g., for records for vectors) *)
+  | E_typ (_, e') -> is_value e'
   (* TODO: more? *)
   | _ -> false
 
@@ -144,7 +144,7 @@ let lit_match = function
 let fabricate_nexp_exist env l typ kids nc typ' =
   match (kids, nc, Env.expand_synonyms env typ') with
   | ( [kid],
-      NC_aux (NC_set (kid', i :: _), _),
+      NC_aux (NC_set (Nexp_aux (Nexp_var kid', _), i :: _), _),
       Typ_aux (Typ_app (Id_aux (Id "atom", _), [A_aux (A_nexp (Nexp_aux (Nexp_var kid'', _)), _)]), _) )
     when Kid.compare kid kid' = 0 && Kid.compare kid kid'' = 0 ->
       Nexp_aux (Nexp_constant i, Unknown)
@@ -154,7 +154,7 @@ let fabricate_nexp_exist env l typ kids nc typ' =
     when Kid.compare kid kid'' = 0 ->
       nint 32
   | ( [kid],
-      NC_aux (NC_set (kid', i :: _), _),
+      NC_aux (NC_set (Nexp_aux (Nexp_var kid', _), i :: _), _),
       Typ_aux
         ( Typ_app
             ( Id_aux (Id "range", _),
@@ -266,6 +266,17 @@ let keep_undef_typ value =
 let is_env_inconsistent env ksubsts =
   let env = KBindings.fold (fun k nexp env -> Env.add_constraint (nc_eq (nvar k) nexp) env) ksubsts env in
   prove __POS__ env nc_false
+
+let rec typ_has_existential (Typ_aux (t, _)) =
+  match t with
+  | Typ_internal_unknown | Typ_id _ | Typ_var _ -> false
+  | Typ_fn _ | Typ_bidir _ -> assert false
+  | Typ_tuple typs -> List.exists typ_has_existential typs
+  | Typ_app (_, args) -> List.exists typ_arg_has_existential args
+  | Typ_exist _ -> true
+
+and typ_arg_has_existential (A_aux (a, _)) =
+  match a with A_nexp _ | A_bool _ -> false | A_typ typ -> typ_has_existential typ
 
 module StringSet = Set.Make (String)
 module StringMap = Map.Make (String)
@@ -499,7 +510,7 @@ let const_props target ast =
           end
       | E_match (e, cases) -> (
           let e', assigns = const_prop_exp substs assigns e in
-          match can_match e' cases substs assigns with
+          match can_match l e' cases substs assigns with
           | None ->
               let assigned_in =
                 List.fold_left (fun vs pe -> IdSet.union vs (assigned_vars_in_pexp pe)) IdSet.empty cases
@@ -514,23 +525,39 @@ let const_props target ast =
         )
       | E_let (lb, e2) -> begin
           match lb with
-          | LB_aux (LB_val (p, e), annot) ->
+          | LB_aux (LB_val (p, e), lb_annot) -> (
               let e', assigns = const_prop_exp substs assigns e in
               let substs' = remove_bound substs p in
               let plain () =
                 let e2', assigns = const_prop_exp substs' assigns e2 in
-                re (E_let (LB_aux (LB_val (p, e'), annot), e2')) assigns
+                re (E_let (LB_aux (LB_val (p, e'), lb_annot), e2')) assigns
               in
-              if is_value e' then (
-                match can_match e' [Pat_aux (Pat_exp (p, e2), (Unknown, empty_tannot))] substs assigns with
-                | None -> plain ()
-                | Some (e'', bindings, kbindings) ->
-                    let e'' = nexp_subst_exp (kbindings_from_list kbindings) e'' in
-                    let bindings = bindings_from_list bindings in
-                    let substs'' = (bindings_union (fst substs') bindings, snd substs') in
-                    const_prop_exp substs'' assigns e''
-              )
-              else plain ()
+              match can_match l e' [Pat_aux (Pat_exp (p, e2), (Unknown, empty_tannot))] substs assigns with
+              | None -> plain ()
+              | Some (e'', bindings, kbindings) ->
+                  let val_bindings, exp_bindings = List.partition (fun (_, e) -> is_value e) bindings in
+                  let e'' = nexp_subst_exp (kbindings_from_list kbindings) e'' in
+                  let val_bindings = bindings_from_list val_bindings in
+                  let substs'' = (bindings_union (fst substs') val_bindings, snd substs') in
+                  let tail_exp, tail_assigns = const_prop_exp substs'' assigns e'' in
+                  ( List.fold_left
+                      (fun (E_aux (_, t_annot) as t_exp) (id, bind_exp) ->
+                        let p_tannot = mk_tannot (env_of_annot (l, annot)) (typ_of bind_exp) in
+                        E_aux
+                          ( E_let
+                              ( LB_aux
+                                  ( LB_val (P_aux (P_id id, (Generated l, p_tannot)), bind_exp),
+                                    (Generated l, empty_tannot)
+                                  ),
+                                t_exp
+                              ),
+                            t_annot
+                          )
+                      )
+                      tail_exp exp_bindings,
+                    tail_assigns
+                  )
+            )
         end
       (* TODO maybe - tuple assignments *)
       | E_assign (le, e) ->
@@ -656,11 +683,15 @@ let const_props target ast =
           | _ -> exp_orig
         )
       | _ -> exp_orig
-    and can_match_with_env env (E_aux (e, (l, annot)) as exp0) cases (substs, ksubsts) assigns =
-      let rec check_exp_pat (E_aux (e, (l, annot)) as exp) (P_aux (p, (l', _)) as pat) =
+    and can_match_with_env l env (E_aux (e, (_l, annot)) as exp0) cases (substs, ksubsts) assigns =
+      let rec check_exp_pat (E_aux (e, (l, annot)) as exp) (P_aux (p, (l', p_annot)) as pat) =
         match (e, p) with
         | _, P_wild -> DoesMatch ([], [])
-        | _, P_typ (_, p') -> check_exp_pat exp p'
+        | _, P_typ (typ, p') -> begin
+            match (typ_has_existential typ, check_exp_pat exp p') with
+            | false, DoesMatch ([(id, v)], ns) -> DoesMatch ([(id, E_aux (E_typ (typ, v), (l', p_annot)))], ns)
+            | _, m -> m
+          end
         | _, P_id id' when pat_id_is_variable env id' ->
             let exp_typ = typ_of exp in
             let pat_typ = typ_of_pat pat in
@@ -770,7 +801,8 @@ let const_props target ast =
         | E_typ (undef_typ, E_aux (E_lit (L_aux (L_undef, lit_l)), _)), _ ->
             Reporting.print_err l' "Monomorphisation" ("Unexpected kind of pattern for literal: " ^ string_of_pat pat);
             GiveUp
-        | E_struct _, _ | E_typ (_, E_aux (E_struct _, _)), _ -> DoesNotMatch
+        | E_typ (_, exp'), _ -> check_exp_pat exp' pat
+        | E_struct _, _ -> DoesNotMatch
         | _ -> GiveUp
       in
       let check_pat = check_exp_pat exp0 in
@@ -826,9 +858,9 @@ let const_props target ast =
           )
       in
       findpat_generic (string_of_exp exp0) assigns cases
-    and can_match exp =
+    and can_match l exp =
       let env = Type_check.env_of exp in
-      can_match_with_env env exp
+      can_match_with_env l env exp
     in
 
     (const_prop_exp, const_prop_pexp)

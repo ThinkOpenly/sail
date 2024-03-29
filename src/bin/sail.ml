@@ -67,32 +67,99 @@
 
 open Libsail
 
-let opt_file_arguments : string list ref = ref []
+let opt_new_cli = ref false
+let opt_free_arguments : string list ref = ref []
 let opt_file_out : string option ref = ref None
 let opt_just_check : bool ref = ref false
 let opt_auto_interpreter_rewrites : bool ref = ref false
 let opt_interactive_script : string option ref = ref None
 let opt_splice : string list ref = ref []
 let opt_print_version = ref false
-let opt_memo_z3 = ref false
+let opt_memo_z3 = ref true
 let opt_have_feature = ref None
+let opt_all_modules = ref false
 let opt_show_sail_dir = ref false
+let opt_project_files : string list ref = ref []
+let opt_variable_assignments : string list ref = ref []
 let opt_config_file : string option ref = ref None
 let opt_format = ref false
 let opt_format_backup : string option ref = ref None
 let opt_format_only : string list ref = ref []
 let opt_format_skip : string list ref = ref []
 
-(* Allow calling all options as either -foo_bar or -foo-bar *)
+(* Allow calling all options as either -foo_bar, -foo-bar, or
+   --foo-bar (for long options). The standard long-opt version
+   --foo-bar is treated as the canonical choice. If !opt_new_cli is
+   set we warn for any non-canonical options. *)
 let rec fix_options = function
   | (flag, spec, doc) :: opts ->
-      (flag, spec, doc) :: (String.map (function '_' -> '-' | c -> c) flag, spec, "") :: fix_options opts
+      if flag = "-help" || flag = "--help" then (flag, spec, doc) :: fix_options opts
+      else (
+        let dash_flag = String.map (function '_' -> '-' | c -> c) flag in
+        let canonical_flag = if String.length flag > 2 then "-" ^ dash_flag else dash_flag in
+        let non_canonical spec =
+          if !opt_new_cli then (
+            let explanation =
+              Printf.sprintf "Old style command line flag %s used, use %s instead" flag canonical_flag
+            in
+            Arg.Tuple [Arg.Unit (fun () -> Reporting.warn "Old style flag" Parse_ast.Unknown explanation); spec]
+          )
+          else spec
+        in
+        if canonical_flag = flag then (flag, spec, doc) :: fix_options opts
+        else if dash_flag = flag then (flag, non_canonical spec, "") :: (canonical_flag, spec, doc) :: fix_options opts
+        else
+          (flag, non_canonical spec, "")
+          :: (dash_flag, non_canonical spec, "")
+          :: (canonical_flag, spec, doc) :: fix_options opts
+      )
   | [] -> []
+
+(* This function does roughly the same thing as Arg.align, except we
+   can call it per target and it won't add additional -help
+   options. *)
+let target_align opts =
+  let split_doc doc =
+    if String.length doc > 0 then
+      if doc.[0] = ' ' then ("", doc)
+      else if doc.[0] = '\n' then ("", doc)
+      else (
+        match String.index_from_opt doc 0 ' ' with
+        | Some n -> (String.sub doc 0 n, String.sub doc n (String.length doc - n))
+        | None -> ("", doc)
+      )
+    else ("", "")
+  in
+  let opts = List.map (fun (flag, spec, doc) -> (flag, spec, split_doc doc)) opts in
+  let alignment = List.fold_left (fun a (flag, _, (arg, _)) -> max a (String.length flag + String.length arg)) 0 opts in
+  let opts =
+    List.map
+      (fun (flag, spec, (arg, doc)) ->
+        if doc = "" then (flag, spec, arg)
+        else (flag, spec, arg ^ String.make (max 0 (alignment - (String.length flag + String.length arg))) ' ' ^ doc)
+      )
+      opts
+  in
+  opts
+
+(* Add a header to separate arguments from each plugin *)
+let add_target_header plugin opts =
+  let add_header (flag, spec, doc) =
+    let desc =
+      match Target.extract_registered () with
+      | [] -> "plugin " ^ plugin
+      | [name] -> "target " ^ name
+      | names -> "targets " ^ Util.string_of_list ", " (fun x -> x) names
+    in
+    (flag, spec, doc ^ " \n\nOptions for " ^ desc)
+  in
+  Util.update_last add_header opts
 
 let load_plugin opts plugin =
   try
     Dynlink.loadfile_private plugin;
-    opts := Arg.align (!opts @ fix_options (Target.extract_options ()))
+    let plugin_opts = Target.extract_options () |> fix_options |> target_align in
+    opts := add_target_header plugin !opts @ plugin_opts
   with Dynlink.Error msg -> prerr_endline ("Failed to load plugin " ^ plugin ^ ": " ^ Dynlink.error_message msg)
 
 let version =
@@ -118,7 +185,6 @@ let rec options =
             Arg.Set Interactive.opt_interactive;
             Arg.Unit (fun () -> Preprocess.add_symbol "INTERACTIVE");
             Arg.Set opt_auto_interpreter_rewrites;
-            Arg.Set Initial_check.opt_undefined_gen;
           ],
         " start interactive interpreter"
       );
@@ -128,7 +194,6 @@ let rec options =
             Arg.Set Interactive.opt_interactive;
             Arg.Unit (fun () -> Preprocess.add_symbol "INTERACTIVE");
             Arg.Set opt_auto_interpreter_rewrites;
-            Arg.Set Initial_check.opt_undefined_gen;
             Arg.String (fun s -> opt_interactive_script := Some s);
           ],
         "<filename> start interactive interpreter and execute commands in script"
@@ -142,22 +207,34 @@ let rec options =
         " drop to an interactive session after running Sail. Differs from -i in that it does not set up the \
          interpreter in the interactive shell."
       );
+      ( "-project",
+        Arg.String (fun file -> opt_project_files := !opt_project_files @ [file]),
+        "<file> sail project file defining module structure"
+      );
+      ( "-variable",
+        Arg.String (fun assignment -> opt_variable_assignments := assignment :: !opt_variable_assignments),
+        "<variable=value> assign a module variable to a value"
+      );
+      ("-all_modules", Arg.Set opt_all_modules, " use all modules in project file");
+      ("-list_files", Arg.Set Frontend.opt_list_files, " list files used in all project files");
       ("-config", Arg.String (fun file -> opt_config_file := Some file), "<file> configuration file");
+      ("-abstract_types", Arg.Set Initial_check.opt_abstract_types, " (experimental) allow abstract types");
       ("-fmt", Arg.Set opt_format, " format input source code");
       ( "-fmt_backup",
         Arg.String (fun suffix -> opt_format_backup := Some suffix),
-        "<suffix> Create backups of formated files as 'file.suffix'"
+        "<suffix> create backups of formated files as 'file.suffix'"
       );
-      ("-fmt_only", Arg.String (fun file -> opt_format_only := file :: !opt_format_only), "<file> Format only this file");
+      ("-fmt_only", Arg.String (fun file -> opt_format_only := file :: !opt_format_only), "<file> format only this file");
       ( "-fmt_skip",
         Arg.String (fun file -> opt_format_skip := file :: !opt_format_skip),
-        "<file> Skip formatting this file"
+        "<file> skip formatting this file"
       );
       ( "-D",
         Arg.String (fun symbol -> Preprocess.add_symbol symbol),
         "<symbol> define a symbol for the preprocessor, as $define does in the source code"
       );
       ("-no_warn", Arg.Clear Reporting.opt_warnings, " do not print warnings");
+      ("-all_warnings", Arg.Set Reporting.opt_all_warnings, " print all warning messages");
       ("-strict_var", Arg.Set Type_check.opt_strict_var, " require var expressions for variable declarations");
       ("-plugin", Arg.String (fun plugin -> load_plugin options plugin), "<file> load a Sail plugin");
       ("-just_check", Arg.Set opt_just_check, " terminate immediately after typechecking");
@@ -168,9 +245,9 @@ let rec options =
         "<symbol> check if a feature symbol is set by default"
       );
       ("-no_color", Arg.Clear Util.opt_colors, " do not use terminal color codes in output");
-      ( "-undefined_gen",
-        Arg.Set Initial_check.opt_undefined_gen,
-        " generate undefined_type functions for types in the specification"
+      ( "-string_literal_type",
+        Arg.Set Type_env.opt_string_literal_type,
+        " use a separate string_literal type for string literals"
       );
       ( "-grouped_regstate",
         Arg.Set State.opt_type_grouped_regstate,
@@ -206,7 +283,7 @@ let rec options =
       );
       ( "-smt_linearize",
         Arg.Set Type_env.opt_smt_linearize,
-        "(experimental) force linearization for constraints involving exponentials"
+        " (experimental) force linearization for constraints involving exponentials"
       );
       ("-Oconstant_fold", Arg.Set Constant_fold.optimize_constant_fold, " apply constant folding optimizations");
       ( "-Oaarch64_fast",
@@ -226,6 +303,7 @@ let rec options =
       ("-dtc_verbose", Arg.Int Type_check.set_tc_debug, "<verbosity> (debug) verbose typechecker output: 0 is silent");
       ("-dsmt_verbose", Arg.Set Constraint.opt_smt_verbose, " (debug) print SMTLIB constraints sent to SMT solver");
       ("-dmagic_hash", Arg.Set Initial_check.opt_magic_hash, " (debug) allow special character # in identifiers");
+      ("-dno_error_filenames", Arg.Set Error_format.opt_debug_no_filenames, " (debug) do not print filenames in errors");
       ( "-dprofile",
         Arg.Set Profile.opt_profile,
         " (debug) provide basic profiling information for rewriting passes within Sail"
@@ -250,54 +328,38 @@ let rec options =
         "<verbosity> (debug) dump information about monomorphisation analysis: 0 silent, 3 max"
       );
       ("-dmono_continue", Arg.Set Rewrites.opt_dmono_continue, " (debug) continue despite monomorphisation errors");
+      ("-dmono_limit", Arg.Set_int Monomorphise.opt_size_set_limit, " (debug) adjust maximum size of split allowed");
       ("-dpattern_warning_no_literals", Arg.Set Pattern_completeness.opt_debug_no_literals, "");
-      ( "-infer_effects",
-        Arg.Unit (fun () -> Reporting.simple_warn "-infer_effects option is deprecated"),
-        " Ignored for compatibility with older versions; effects are always inferred now (deprecated)"
-      );
       ( "-dbacktrace",
         Arg.Int (fun l -> Reporting.opt_backtrace_length := l),
-        "<length> Length of backtrace to show when reporting unreachable code"
+        "<length> (debug) length of backtrace to show when reporting unreachable code"
+      );
+      ( "-infer_effects",
+        Arg.Unit (fun () -> Reporting.simple_warn "-infer_effects option is deprecated"),
+        " (deprecated) ignored for compatibility with older versions; effects are always inferred now"
+      );
+      ( "-undefined_gen",
+        Arg.Unit (fun () -> ()),
+        " (deprecated) ignored as undefined generation is now always the same for all Sail backends"
       );
       ("-v", Arg.Set opt_print_version, " print version");
       ("-version", Arg.Set opt_print_version, " print version");
       ("-verbose", Arg.Int (fun verbosity -> Util.opt_verbosity := verbosity), "<verbosity> produce verbose output");
       ( "-explain_all_variables",
         Arg.Set Type_error.opt_explain_all_variables,
-        " Explain all type variables in type error messages"
+        " explain all type variables in type error messages"
       );
-      ( "-explain_constraints",
-        Arg.Set Type_error.opt_explain_constraints,
-        " Explain all type variables in type error messages"
-      );
+      ("-explain_constraints", Arg.Set Type_error.opt_explain_constraints, " explain constraints in type error messages");
       ( "-explain_verbose",
         Arg.Tuple [Arg.Set Type_error.opt_explain_all_variables; Arg.Set Type_error.opt_explain_constraints],
-        " Add the maximum amount of explanation to type errors"
+        " add the maximum amount of explanation to type errors"
       );
-      ("-help", Arg.Unit (fun () -> help !options), " Display this list of options. Also available as -h or --help");
-      ("-h", Arg.Unit (fun () -> help !options), "");
-      ("--help", Arg.Unit (fun () -> help !options), "");
+      ("-h", Arg.Unit (fun () -> help !options), " display this list of options. Also available as -help or --help");
+      ("-help", Arg.Unit (fun () -> help !options), " display this list of options");
+      ("--help", Arg.Unit (fun () -> help !options), " display this list of options");
     ]
 
-let register_default_target () = Target.register ~name:"default" (fun _ _ _ _ _ _ -> ())
-
-let run_sail (config : Yojson.Basic.t option) tgt =
-  Target.run_pre_parse_hook tgt ();
-  let ast, env, effect_info =
-    Frontend.load_files ~target:tgt Manifest.dir !options Type_check.initial_env !opt_file_arguments
-  in
-  let ast, env = Frontend.initial_rewrite effect_info env ast in
-  let ast, env = List.fold_right (fun file (ast, _) -> Splice.splice ast file) !opt_splice (ast, env) in
-  let effect_info = Effects.infer_side_effects (Target.asserts_termination tgt) ast in
-  Reporting.opt_warnings := false;
-
-  (* Don't show warnings during re-writing for now *)
-  Target.run_pre_rewrites_hook tgt ast effect_info env;
-  let ast, effect_info, env = Rewrites.rewrite effect_info env (Target.rewrites tgt) ast in
-
-  Target.action tgt config Manifest.dir !opt_file_out ast effect_info env;
-
-  (ast, env, effect_info)
+let register_default_target () = Target.register ~name:"default" Target.empty_action
 
 let file_to_string filename =
   let chan = open_in filename in
@@ -314,6 +376,78 @@ let file_to_string filename =
     close_in chan;
     Buffer.contents buf
 
+let run_sail (config : Yojson.Basic.t option) tgt =
+  Target.run_pre_parse_hook tgt ();
+
+  let project_files, frees =
+    List.partition (fun free -> Filename.check_suffix free ".sail_project") !opt_free_arguments
+  in
+
+  let ast, env, effect_info =
+    match (project_files, !opt_project_files) with
+    | [], [] ->
+        (* If there are no provided project files, we concatenate all
+           the free file arguments into one big blob like before *)
+        Frontend.load_files ~target:tgt Manifest.dir !options Type_check.initial_env frees
+    (* Allows project files from either free arguments via suffix, or
+       from -project, but not both as the ordering between them would
+       be unclear. *)
+    | project_files, [] | [], project_files ->
+        let t = Profile.start () in
+        let defs =
+          List.map
+            (fun project_file ->
+              let root_directory = Filename.dirname project_file in
+              let contents = file_to_string project_file in
+              Project.mk_root root_directory :: Initial_check.parse_project ~filename:project_file ~contents ()
+            )
+            project_files
+          |> List.concat
+        in
+        let variables = ref Util.StringMap.empty in
+        List.iter
+          (fun assignment ->
+            if not (Project.parse_assignment ~variables assignment) then
+              raise (Reporting.err_general Parse_ast.Unknown ("Could not parse assignment " ^ assignment))
+          )
+          !opt_variable_assignments;
+        let proj = Project.initialize_project_structure ~variables defs in
+        let mod_ids =
+          if !opt_all_modules then Project.all_modules proj
+          else
+            List.map
+              (fun mod_name ->
+                match Project.get_module_id proj mod_name with
+                | Some id -> id
+                | None -> raise (Reporting.err_general Parse_ast.Unknown ("Unknown module " ^ mod_name))
+              )
+              frees
+        in
+        Profile.finish "parsing project" t;
+        let env = Type_check.initial_env_with_modules proj in
+        Frontend.load_modules ~target:tgt Manifest.dir !options env proj mod_ids
+    | _, _ ->
+        raise
+          (Reporting.err_general Parse_ast.Unknown
+             "Module files (.sail_project) should either be specified with the appropriate option, or as free \
+              arguments with the appropriate extension, but not both!"
+          )
+  in
+  let ast, env = Frontend.initial_rewrite effect_info env ast in
+  let ast, env = List.fold_right (fun file (ast, _) -> Splice.splice ast file) !opt_splice (ast, env) in
+  let effect_info = Effects.infer_side_effects (Target.asserts_termination tgt) ast in
+
+  (* Don't show warnings during re-writing for now *)
+  Reporting.suppressed_warning_info ();
+  Reporting.opt_warnings := false;
+
+  Target.run_pre_rewrites_hook tgt ast effect_info env;
+  let ast, effect_info, env = Rewrites.rewrite effect_info env (Target.rewrites tgt) ast in
+
+  Target.action tgt config Manifest.dir !opt_file_out ast effect_info env;
+
+  (ast, env, effect_info)
+
 let run_sail_format (config : Yojson.Basic.t option) =
   let is_format_file f = match !opt_format_only with [] -> true | files -> List.exists (fun f' -> f = f') files in
   let is_skipped_file f = match !opt_format_skip with [] -> false | files -> List.exists (fun f' -> f = f') files in
@@ -327,7 +461,7 @@ let run_sail_format (config : Yojson.Basic.t option) =
       | None -> Format_sail.default_config
   end in
   let module Formatter = Format_sail.Make (Config) in
-  let parsed_files = List.map (fun f -> (f, Initial_check.parse_file f)) !opt_file_arguments in
+  let parsed_files = List.map (fun f -> (f, Initial_check.parse_file f)) !opt_free_arguments in
   List.iter
     (fun (f, (comments, parse_ast)) ->
       let source = file_to_string f in
@@ -390,6 +524,10 @@ let parse_config_file file =
     None
 
 let main () =
+  if Option.is_some (Sys.getenv_opt "SAIL_NEW_CLI") then opt_new_cli := true;
+
+  options := Arg.align (fix_options !options);
+
   begin
     match Sys.getenv_opt "SAIL_NO_PLUGINS" with
     | Some _ -> ()
@@ -406,9 +544,7 @@ let main () =
       )
   end;
 
-  options := Arg.align !options;
-
-  Arg.parse_dynamic options (fun s -> opt_file_arguments := !opt_file_arguments @ [s]) usage_msg;
+  Arg.parse_dynamic options (fun s -> opt_free_arguments := !opt_free_arguments @ [s]) usage_msg;
 
   let config = Option.bind (get_config_file ()) parse_config_file in
 

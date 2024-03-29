@@ -122,7 +122,6 @@ val throw_location : name
 val return : name
 
 val name : id -> name
-val global : id -> name
 
 val cval_rename : name -> name -> cval -> cval
 val clexp_rename : name -> name -> clexp -> clexp
@@ -137,6 +136,8 @@ val string_of_value : Value2.vl -> string
 val string_of_cval : cval -> string
 val string_of_clexp : clexp -> string
 val string_of_instr : instr -> string
+
+val full_string_of_ctyp : ctyp -> string
 
 (** {1. Functions and modules for working with ctyps} *)
 
@@ -185,6 +186,8 @@ val subst_poly : ctyp KBindings.t -> ctyp -> ctyp
 val cval_ctyp : cval -> ctyp
 val clexp_ctyp : clexp -> ctyp
 val cdef_ctyps : cdef -> CTSet.t
+
+val cdef_ctyps_has : (ctyp -> bool) -> cdef -> bool
 
 (** {1 Functions for mapping over and extracting information from instructions, values, and definitions} *)
 

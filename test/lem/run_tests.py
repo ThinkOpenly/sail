@@ -5,6 +5,8 @@ import re
 import sys
 import hashlib
 
+from shutil import which
+
 mydir = os.path.dirname(__file__)
 os.chdir(mydir)
 sys.path.insert(0, os.path.realpath('..'))
@@ -22,6 +24,10 @@ skip_tests = {
     # The Lem backend needs sail_mem_read to be instantiated at a minimum
     'concurrency_interface_dec',
     'concurrency_interface_inc',
+    # Abstract types not implemented for Lem yet
+    'abstract_bool',
+    'abstract_bool2',
+    'constraint_syn',
 }
 skip_tests_mwords = {
     'phantom_option',
@@ -43,12 +49,23 @@ skip_tests_mwords = {
     # The Lem backend needs sail_mem_read to be instantiated at a minimum
     'concurrency_interface_dec',
     'concurrency_interface_inc',
+    'wf_register_type',
+    'bitfield_exponential',
+    'bitfield_abs',
+    'bitfield_mod',
+    # Abstract types not implemented for Lem yet
+    'abstract_bool',
+    'abstract_bool2',
+    'constraint_syn',
 }
 
 print('Sail is {}'.format(sail))
 print('Sail dir is {}'.format(sail_dir))
 
 def test_lem(name, opts, skip_list):
+    if which('cvc4') is None:
+        skip_tests.add('type_pow_zero')
+        skip_tests_mwords.add('type_pow_zero')
     banner('Testing Lem {}'.format(name))
     results = Results(name)
     for filenames in chunks(os.listdir(test_dir), parallel()):

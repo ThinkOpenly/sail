@@ -112,6 +112,7 @@
 (**************************************************************************)
 
 let opt_warnings = ref true
+let opt_all_warnings = ref false
 let opt_backtrace_length = ref 10
 
 type pos_or_loc = Loc of Parse_ast.l | Pos of Lexing.position
@@ -139,6 +140,18 @@ let rec simp_loc = function
   | Parse_ast.Generated l -> simp_loc l
   | Parse_ast.Hint (_, l1, l2) -> begin match simp_loc l1 with None -> simp_loc l2 | pos -> pos end
   | Parse_ast.Range (p1, p2) -> Some (p1, p2)
+
+let loc_range_to_src (p1 : Lexing.position) (p2 : Lexing.position) =
+  (fun contents -> String.sub contents p1.pos_cnum (p2.pos_cnum - p1.pos_cnum)) (Util.read_whole_file p1.pos_fname)
+
+let rec map_loc_range f = function
+  | Parse_ast.Unknown -> Parse_ast.Unknown
+  | Parse_ast.Unique (n, l) -> Parse_ast.Unique (n, map_loc_range f l)
+  | Parse_ast.Generated l -> Parse_ast.Generated (map_loc_range f l)
+  | Parse_ast.Hint (hint, l1, l2) -> Parse_ast.Hint (hint, l1, map_loc_range f l2)
+  | Parse_ast.Range (p1, p2) ->
+      let p1, p2 = f p1 p2 in
+      Parse_ast.Range (p1, p2)
 
 let rec loc_file = function
   | Parse_ast.Unknown -> None
@@ -246,18 +259,32 @@ let suppress_warnings_for_file f = ignored_files := StringSet.add f !ignored_fil
 
 let seen_warnings = ref RangeMap.empty
 let once_from_warnings = ref StringSet.empty
+let suppressed_warnings = ref 0
+
+let suppressed_warning_info () =
+  if !suppressed_warnings > 0 then (
+    prerr_endline
+      (Util.("Warning" |> yellow |> clear)
+      ^ ": " ^ string_of_int !suppressed_warnings
+      ^ " warnings have been suppressed. Use --all-warnings to display them."
+      );
+    suppressed_warnings := 0
+  )
 
 let warn ?once_from short_str l explanation =
   let already_shown =
     match once_from with
-    | Some (file, lnum, cnum, enum) ->
+    | Some (file, lnum, cnum, enum) when not !opt_all_warnings ->
         let key = Printf.sprintf "%d:%d:%d:%s" lnum cnum enum file in
-        if StringSet.mem key !once_from_warnings then true
+        if StringSet.mem key !once_from_warnings then (
+          incr suppressed_warnings;
+          true
+        )
         else (
           once_from_warnings := StringSet.add key !once_from_warnings;
           false
         )
-    | None -> false
+    | _ -> false
   in
   if !opt_warnings && not already_shown then (
     match simp_loc l with
@@ -278,14 +305,17 @@ let warn ?once_from short_str l explanation =
 let format_warn ?once_from short_str l explanation =
   let already_shown =
     match once_from with
-    | Some (file, lnum, cnum, enum) ->
+    | Some (file, lnum, cnum, enum) when not !opt_all_warnings ->
         let key = Printf.sprintf "%d:%d:%d:%s" lnum cnum enum file in
-        if StringSet.mem key !once_from_warnings then true
+        if StringSet.mem key !once_from_warnings then (
+          incr suppressed_warnings;
+          true
+        )
         else (
           once_from_warnings := StringSet.add key !once_from_warnings;
           false
         )
-    | None -> false
+    | _ -> false
   in
   if !opt_warnings && not already_shown then (
     match simp_loc l with

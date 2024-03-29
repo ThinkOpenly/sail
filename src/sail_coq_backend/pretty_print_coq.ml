@@ -97,6 +97,7 @@ let opt_undef_axioms = ref false
 let opt_debug_on : string list ref = ref []
 let opt_extern_types : string list ref = ref []
 let opt_generate_extern_types : bool ref = ref false
+let opt_coq_record_update : bool ref = ref false
 
 let prefix_recordtype = true
 
@@ -178,7 +179,12 @@ let langlebar = string "<|"
 let ranglebar = string "|>"
 let anglebars = enclose langlebar ranglebar
 let enclose_record = enclose (string "{| ") (string " |}")
+
+(* Record updates from the notations we can generate *)
 let enclose_record_update = enclose (string "{[ ") (string " ]}")
+
+(* Record updates using coq-record-updates package *)
+let enclose_coq_record_update = enclose (string "<|") (string "|>")
 let bigarrow = string "=>"
 let comment = enclose (string "(*") (string "*)")
 
@@ -320,12 +326,12 @@ let rec orig_nc (NC_aux (nc, l) as full_nc) =
   | NC_bounded_le (nexp1, nexp2) -> rewrap (NC_bounded_le (orig_nexp nexp1, orig_nexp nexp2))
   | NC_bounded_lt (nexp1, nexp2) -> rewrap (NC_bounded_lt (orig_nexp nexp1, orig_nexp nexp2))
   | NC_not_equal (nexp1, nexp2) -> rewrap (NC_not_equal (orig_nexp nexp1, orig_nexp nexp2))
-  | NC_set (kid, s) -> rewrap (NC_set (orig_kid kid, s))
+  | NC_set (nexp, s) -> rewrap (NC_set (orig_nexp nexp, s))
   | NC_or (nc1, nc2) -> rewrap (NC_or (orig_nc nc1, orig_nc nc2))
   | NC_and (nc1, nc2) -> rewrap (NC_and (orig_nc nc1, orig_nc nc2))
   | NC_app (f, args) -> rewrap (NC_app (f, List.map orig_typ_arg args))
   | NC_var kid -> rewrap (NC_var (orig_kid kid))
-  | NC_true | NC_false -> full_nc
+  | NC_id _ | NC_true | NC_false -> full_nc
 
 and orig_typ_arg (A_aux (arg, l)) =
   let rewrap a = A_aux (a, l) in
@@ -412,14 +418,16 @@ let rec count_nexp_vars (Nexp_aux (nexp, _)) =
   | Nexp_times (n1, n2) | Nexp_sum (n1, n2) | Nexp_minus (n1, n2) ->
       merge_kid_count (count_nexp_vars n1) (count_nexp_vars n2)
   | Nexp_exp n | Nexp_neg n -> count_nexp_vars n
+  | Nexp_if (i, t, e) -> merge_kid_count (count_nc_vars i) (merge_kid_count (count_nexp_vars t) (count_nexp_vars e))
 
-let rec count_nc_vars (NC_aux (nc, _)) =
+and count_nc_vars (NC_aux (nc, _)) =
   let count_arg (A_aux (arg, _)) =
     match arg with A_bool nc -> count_nc_vars nc | A_nexp nexp -> count_nexp_vars nexp | A_typ _ -> KBindings.empty
   in
   match nc with
   | NC_or (nc1, nc2) | NC_and (nc1, nc2) -> merge_kid_count (count_nc_vars nc1) (count_nc_vars nc2)
-  | NC_var kid | NC_set (kid, _) -> KBindings.singleton kid 1
+  | NC_var kid -> KBindings.singleton kid 1
+  | NC_set (n, _) -> count_nexp_vars n
   | NC_equal (n1, n2)
   | NC_bounded_ge (n1, n2)
   | NC_bounded_gt (n1, n2)
@@ -427,7 +435,7 @@ let rec count_nc_vars (NC_aux (nc, _)) =
   | NC_bounded_lt (n1, n2)
   | NC_not_equal (n1, n2) ->
       merge_kid_count (count_nexp_vars n1) (count_nexp_vars n2)
-  | NC_true | NC_false -> KBindings.empty
+  | NC_id _ | NC_true | NC_false -> KBindings.empty
   | NC_app (_, args) -> List.fold_left merge_kid_count KBindings.empty (List.map count_arg args)
 
 (* Simplify some of the complex boolean types created by the Sail type checker,
@@ -459,7 +467,7 @@ let simplify_atom_bool l kopts nc atom_nc =
       | NC_bounded_lt (_, Nexp_aux (Nexp_var kid, _)) when KBindings.mem kid lin_ty_vars -> Some kid
       | NC_not_equal (Nexp_aux (Nexp_var kid, _), _) when KBindings.mem kid lin_ty_vars -> Some kid
       | NC_not_equal (_, Nexp_aux (Nexp_var kid, _)) when KBindings.mem kid lin_ty_vars -> Some kid
-      | NC_set (kid, _ :: _) when KBindings.mem kid lin_ty_vars -> Some kid
+      | NC_set (Nexp_aux (Nexp_var kid, _), _ :: _) when KBindings.mem kid lin_ty_vars -> Some kid
       | _ -> None
     in
     let replace kills vars =
@@ -603,6 +611,7 @@ let rec doc_typ_fns ctx env =
     | _ -> atomic_typ atyp_needed ty
   and atomic_typ atyp_needed (Typ_aux (t, l) as ty) =
     match t with
+    | Typ_id (Id_aux (Id "string_literal", _)) -> string "string"
     | Typ_id (Id_aux (Id "bool", _)) -> string "bool"
     | Typ_id (Id_aux (Id "bit", _)) -> string "bitU"
     | Typ_id id ->
@@ -651,7 +660,7 @@ let rec doc_typ_fns ctx env =
                     let m_pp = doc_nexp ctx ~skip_vars:kid_set m in
                     let tpp, len_pp = string "mword " ^^ m_pp, string "length_mword" in
                     let length_constraint_pp =
-                      if KidSet.is_empty (KidSet.inter kid_set (nexp_frees m))
+                      if KidSet.is_empty (KidSet.inter kid_set (tyvars_of_nexp m))
                       then None
                       else Some (separate space [len_pp; doc_var ctx var; string "=?"; doc_nexp ctx m])
                     in
@@ -669,7 +678,7 @@ let rec doc_typ_fns ctx env =
                     let m_pp = doc_nexp ctx ~skip_vars:kid_set m in
                     let tpp, len_pp = string "vec" ^^ space ^^ typ elem_typ ^^ space ^^ m_pp, string "vec_length" in
                     let length_constraint_pp =
-                      if KidSet.is_empty (KidSet.inter kid_set (nexp_frees m))
+                      if KidSet.is_empty (KidSet.inter kid_set (tyvars_of_nexp m))
                       then None
                       else Some (separate space [len_pp; doc_var ctx var; string "=?"; doc_nexp ctx m])
                     in
@@ -815,17 +824,18 @@ and doc_nc_exp ctx env nc =
     match nc with
     | NC_not_equal (ne1, ne2) ->
         string "negb" ^^ space ^^ parens (doc_op (string "=?") (doc_nexp ctx ne1) (doc_nexp ctx ne2))
-    | NC_set (kid, is) ->
+    | NC_set (nexp, is) ->
         separate space
           [
             string "member_Z_list";
-            doc_var ctx kid;
+            doc_nexp ctx nexp;
             brackets (separate (string "; ") (List.map (fun i -> string (Nat_big_num.to_string i)) is));
           ]
     | NC_app (f, args) -> separate space (doc_nc_fn ctx f :: List.map doc_typ_arg_exp args)
     | _ -> l0 nc_full
   and l0 (NC_aux (nc, _) as nc_full) =
     match nc with
+    | NC_id id -> doc_id_type ctx.types_mod ctx.avoid_target_names (Some env) id
     | NC_true -> string "true"
     | NC_false -> string "false"
     | NC_var kid -> doc_nexp ctx (nvar kid)
@@ -1327,6 +1337,45 @@ let merge_new_tyvars ctxt old_env pat new_env =
 let maybe_parens_comma_list f ls =
   match ls with [x] -> f true x | xs -> parens (separate (string ", ") (List.map (f false) xs))
 
+let complex_autocast ctxt env top1 top2 =
+  let ignore_apps_of = IdSet.of_list (List.map mk_id ["register"; "range"; "implicit"; "atom"; "atom_bool"]) in
+  let rec aux_typ (Typ_aux (t1, _) as typ1) (Typ_aux (t2, _) as typ2) =
+    match (t1, t2) with
+    | Typ_app (f, args1), Typ_app (_, args2) when not (IdSet.mem f ignore_apps_of) ->
+        let rs, args = List.split (List.map2 aux_arg args1 args2) in
+        let f, args =
+          if string_of_id f = "vector" then ("vec", List.rev args)
+          else if string_of_id f = "bitvector" then ("mword", args)
+          else (string_of_id f, args)
+        in
+        if List.exists (fun x -> x) rs then (true, "(" ^ f ^ " " ^ String.concat " " args ^ ")") else (false, "_")
+    | Typ_tuple typs1, Typ_tuple typs2 ->
+        let rs, typs = List.split (List.map2 aux_typ typs1 typs2) in
+        if List.exists (fun x -> x) rs then (true, "(" ^ String.concat " * " typs ^ ")") else (false, "_")
+    | Typ_exist (_, _, typ), _ -> aux_typ typ typ2
+    | _, Typ_exist (_, _, typ) -> aux_typ typ1 typ
+    | _ -> (false, "_")
+  and aux_arg (A_aux (a1, _)) (A_aux (a2, _)) =
+    match (a1, a2) with
+    | A_nexp n1, A_nexp n2 -> if similar_nexps ctxt env n1 n2 then (false, "_") else (true, "_sz")
+    | A_typ typ1, A_typ typ2 -> aux_typ typ1 typ2
+    | _ -> (false, "_")
+  in
+  aux_typ top1 top2
+
+type auto_t = Simple | Complex of string | No
+
+let string_of_auto_t = function No -> "no" | Simple -> "simple" | Complex s -> "complex(" ^ s ^ ")"
+
+let autocast_req ctxt env typ1 typ2 typ1_expanded typ2_expanded =
+  match (typ1_expanded, typ2_expanded) with
+  | ( Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n1, _)]), _),
+      Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n2, _)]), _) ) ->
+      if similar_nexps ctxt env n1 n2 then No else Simple
+  | _ -> (
+      match complex_autocast ctxt env typ1 typ2 with false, _ -> No | true, s -> Complex s
+    )
+
 let report = Reporting.err_unreachable
 let doc_exp, doc_let =
   let rec top_exp (ctxt : context) (aexp_needed : bool) (E_aux (e, (l, annot)) as full_exp) =
@@ -1340,25 +1389,23 @@ let doc_exp, doc_let =
     let expN = top_exp ctxt false in
     let expV = top_exp ctxt in
     let wrap_parens doc = if aexp_needed then parens doc else doc in
+
     let maybe_cast descr typ pp =
       let env = env_of full_exp in
+
       let exp_typ = expand_range_type (Env.expand_synonyms env typ) in
       let ann_typ = general_typ_of full_exp in
-      let ann_typ = expand_range_type (Env.expand_synonyms env ann_typ) in
-      let autocast =
-        (* Avoid using helper functions which simplify the nexps *)
-        match (exp_typ, ann_typ) with
-        | ( Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n1, _)]), _),
-            Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n2, _)]), _) ) ->
-            not (similar_nexps ctxt env n1 n2)
-        | _ -> false
-      in
+      let ann_typ' = expand_range_type (Env.expand_synonyms env ann_typ) in
+      let autocast = autocast_req ctxt env typ ann_typ exp_typ ann_typ' in
       let () =
         debug ctxt (lazy (descr ^ " with type " ^ string_of_typ typ));
         debug ctxt (lazy (" expected type " ^ string_of_typ ann_typ));
-        debug ctxt (lazy (" autocast " ^ string_of_bool autocast))
+        debug ctxt (lazy (" autocast " ^ string_of_auto_t autocast))
       in
-      if autocast then wrap_parens (string "autocast" ^/^ pp) else pp
+      match autocast with
+      | No -> pp
+      | Simple -> wrap_parens (string "autocast" ^/^ pp)
+      | Complex s -> wrap_parens (string ("autocast (T := fun _sz => " ^ s ^ "%type)") ^/^ pp)
     in
     let liftR doc =
       if Option.is_some ctxt.early_ret && effectful (effect_of full_exp) then
@@ -1774,11 +1821,8 @@ let doc_exp, doc_let =
                   (* When we expect a bitvector of arbitrary length we don't need a cast *)
                   | _, Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp (Nexp_aux (Nexp_var v, _)), _)]), _)
                     when List.exists (fun k -> Kid.compare v (kopt_kid k) == 0) out_typ_bound ->
-                      false
-                  | ( Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n1, _)]), _),
-                      Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n2, _)]), _) ) ->
-                      not (similar_nexps ctxt env n1 n2)
-                  | _ -> false
+                      No
+                  | _ -> autocast_req ctxt env in_typ out_typ in_typ out_typ
                 in
                 autocast
               in
@@ -1814,7 +1858,7 @@ let doc_exp, doc_let =
                    calculating the instantiations. *)
                 let vars_in_env n =
                   let ekids = Env.get_typ_vars env in
-                  let frees = nexp_frees n in
+                  let frees = tyvars_of_nexp n in
                   (not (KidSet.is_empty frees)) && KidSet.for_all (fun kid -> KBindings.mem kid ekids) frees
                 in
                 match (destruct_atom_nexp env typ_of_arg, destruct_atom_nexp env typ_from_fn) with
@@ -1823,7 +1867,7 @@ let doc_exp, doc_let =
                        type signature, because it's let-bound in the Coq definition rather than being
                        a real argument. *)
                     comment (construct_dep_pairs ctxt inst_env want_parens arg typ_from_fn)
-                | Some n1, Some n2 when (not autocast) && vars_in_env n2 && not (similar_nexps ctxt env n1 n2) ->
+                | Some n1, Some n2 when autocast = No && vars_in_env n2 && not (similar_nexps ctxt env n1 n2) ->
                     debug ctxt
                       ( lazy
                         ("  leaving int arg implicit because of non-trivial types " ^ string_of_nexp n1 ^ " and "
@@ -1844,7 +1888,9 @@ let doc_exp, doc_let =
                   group (hang 2 (call ^^ break 1 ^^ argspp))
                 )
                 else (
+                  let () = debug_depth := !debug_depth + 1 in
                   let argspp = List.map2 (doc_arg true) args arg_typs in
+                  let () = debug_depth := !debug_depth - 1 in
                   let all =
                     match is_rec with
                     | Some (pre, post, is_measured) ->
@@ -1863,9 +1909,14 @@ let doc_exp, doc_let =
                 )
               in
 
-              let () = debug ctxt (lazy (" autocast: " ^ string_of_bool autocast)) in
+              let () = debug ctxt (lazy (" autocast: " ^ string_of_auto_t autocast)) in
               let autocast_id = if is_monadic then "autocast_m" else "autocast" in
-              let epp = if autocast then string autocast_id ^^ space ^^ parens epp else epp in
+              let epp =
+                match autocast with
+                | No -> epp
+                | Simple -> string autocast_id ^^ space ^^ parens epp
+                | Complex s -> string (autocast_id ^ " (T := fun _sz => " ^ s ^ "%type)") ^^ space ^^ parens epp
+              in
               liftR (if aexp_needed then parens (align epp) else epp)
         end
     | E_vector_access (v, e) ->
@@ -1925,30 +1976,24 @@ let doc_exp, doc_let =
         let outer_ex, _, outer_typ' = classify_ex_type ctxt env outer_typ in
         let cast_ex, _, cast_typ' = classify_ex_type ctxt env ~rawbools:true cast_typ in
         let inner_ex, _, inner_typ' = classify_ex_type ctxt env inner_typ in
-        let autocast_out =
-          (* Avoid using helper functions which simplify the nexps *)
-          match (outer_typ', cast_typ') with
-          | ( Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n1, _)]), _),
-              Typ_aux (Typ_app (Id_aux (Id "bitvector", _), [A_aux (A_nexp n2, _)]), _) ) ->
-              not (similar_nexps ctxt env n1 n2)
-          | _ -> false
-        in
+        let autocast_out = autocast_req ctxt env outer_typ cast_typ outer_typ' cast_typ' in
         let effects = effectful (effect_of e) in
-        (* We don't currently have a version of autocast under existentials,
-           but they're rare and may be unnecessary *)
-        let autocast_out = if effects && outer_ex = ExGeneral then false else autocast_out in
         let () =
           debug ctxt
             ( lazy
               (" effectful: " ^ string_of_bool effects ^ " outer_ex: " ^ string_of_ex_kind outer_ex ^ " cast_ex: "
              ^ string_of_ex_kind cast_ex ^ " inner_ex: " ^ string_of_ex_kind inner_ex ^ " autocast_out: "
-             ^ string_of_bool autocast_out
+             ^ string_of_auto_t autocast_out
               )
               )
         in
         let epp = epp ^/^ doc_tannot ctxt (env_of e) effects typ in
+        let autocast_name = if effects then "autocast_m" else "autocast" in
         let epp =
-          if autocast_out then string (if effects then "autocast_m" else "autocast") ^^ space ^^ parens epp else epp
+          match autocast_out with
+          | No -> epp
+          | Simple -> string autocast_name ^^ space ^^ parens epp
+          | Complex s -> string (autocast_name ^ " (T := fun _sz => " ^ s ^ "%type)") ^^ space ^^ parens epp
         in
         if aexp_needed then parens epp else epp
     | E_struct fexps ->
@@ -1977,7 +2022,14 @@ let doc_exp, doc_let =
                    ("cannot get record type from annot " ^ string_of_tannot annot ^ " of exp " ^ string_of_exp full_exp)
                 )
         in
-        if List.length fexps > 1 then (
+        if !opt_coq_record_update then (
+          let epp =
+            expY e ^^ break 1
+            ^^ separate_map (break 1) (fun fexp -> enclose_coq_record_update (doc_fexp ctxt recordtyp fexp)) fexps
+          in
+          if aexp_needed then parens epp else epp
+        )
+        else if List.length fexps > 1 then (
           let _, fields = Env.get_record recordtyp env in
           let var, let_pp =
             match e with
@@ -2290,7 +2342,8 @@ let types_used_with_generic_eq defs =
   in
   let typs_req_def (DEF_aux (aux, _) as def) =
     match aux with
-    | DEF_type _ | DEF_val _ | DEF_fixity _ | DEF_overload _ | DEF_default _ | DEF_pragma _ | DEF_register _ ->
+    | DEF_type _ | DEF_constraint _ | DEF_val _ | DEF_fixity _ | DEF_overload _ | DEF_default _ | DEF_pragma _
+    | DEF_register _ ->
         IdSet.empty
     | DEF_fundef fd -> typs_req_fundef fd
     | DEF_internal_mutrec fds -> List.fold_left IdSet.union IdSet.empty (List.map typs_req_fundef fds)
@@ -2351,6 +2404,7 @@ let doc_typdef types_mod avoid_target_names generic_eq_types (TD_aux (td, (l, an
       ^^ dot ^^ hardline
       ^^ separate space [string "#[export] Hint Unfold"; idpp; colon; string "sail."]
       ^^ twice hardline
+  | TD_abstract _ -> unreachable l __POS__ "Abstract type not supported by Coq backend"
   | TD_bitfield _ -> empty (* TODO? *)
   | TD_record (id, typq, fs, _) ->
       let fname fid = doc_field_name bare_ctxt id fid in
@@ -2368,6 +2422,7 @@ let doc_typdef types_mod avoid_target_names generic_eq_types (TD_aux (td, (l, an
       in
       let fs_doc = separate_map hardline f_pp fs in
       let type_id_pp = doc_id_type types_mod avoid_target_names None id in
+      let typq_pps = doc_typquant_items bare_ctxt Env.empty braces typq in
       let match_parameters =
         match quant_kopts typq with [] -> empty | l -> space ^^ separate_map space (fun _ -> underscore) l
       in
@@ -2401,7 +2456,21 @@ let doc_typdef types_mod avoid_target_names generic_eq_types (TD_aux (td, (l, an
             ^^ separate space (List.mapi (pp_field "e") fs)
             ^//^ string "end" ^^ dot
       in
-      let updates_pp = separate hardline (List.map doc_update_field fs) in
+      let updates_pp =
+        if !opt_coq_record_update then (
+          let typq_ids, _ = typquant_names_separate bare_ctxt typq in
+          let name_pp = string "Build_" ^^ type_id_pp in
+          let constructor =
+            match typq_ids with [] -> name_pp | _ -> parens (name_pp ^^ space ^^ separate space typq_ids)
+          in
+          string "#[export] Instance eta_" ^^ type_id_pp
+          ^^ separate space (empty :: typq_pps)
+          ^^ string " : Settable _ := settable! " ^^ constructor ^^ string " <"
+          ^^ separate_map (string "; ") (fun (_, fid) -> fname fid) fs
+          ^^ string ">."
+        )
+        else separate hardline (List.map doc_update_field fs)
+      in
       let numfields = List.length fs in
       let intros_pp s =
         string " intros ["
@@ -2428,7 +2497,6 @@ let doc_typdef types_mod avoid_target_names generic_eq_types (TD_aux (td, (l, an
           ^^ hardline ^^ string "Defined." ^^ twice hardline
         else empty
       in
-      let typq_pps = doc_typquant_items bare_ctxt Env.empty braces typq in
       let inhabited_pp =
         let req_pps = List.filter_map doc_inhabited_req (quant_items typq) in
         let params_pp = separate space (List.filter_map (quant_item_id_name bare_ctxt) (quant_items typq)) in
@@ -2946,9 +3014,9 @@ let doc_funcl_init types_mod avoid_target_names effect_info mutrec rec_opt ?rec_
   in
   let intropp = match mutrec with NotMutrec -> intropp | FirstFn -> string "Fixpoint" | LaterFn -> string "with" in
   let ctxt =
-    match mutrec with
-    | NotMutrec -> ctxt
-    | _ -> { ctxt with recursive_fns = Bindings.singleton id (List.length quantspp, 0, is_measured) }
+    match (rec_opt, mutrec) with
+    | Rec_aux (Rec_nonrec, _), NotMutrec -> ctxt
+    | _, _ -> { ctxt with recursive_fns = Bindings.singleton id (List.length quantspp, 0, is_measured) }
   in
   let _ =
     match guard with
@@ -3314,6 +3382,114 @@ let doc_def types_mod unimplemented avoid_target_names generic_eq_types effect_i
         ("Loop termination measures for " ^ string_of_id id ^ " should have been rewritten before backend")
   | DEF_impl _ | DEF_outcome _ | DEF_instantiation _ ->
       unreachable (def_loc def) __POS__ "Event definition should have been rewritten before backend"
+  | DEF_constraint _ -> unreachable (def_loc def) __POS__ "Abstract constraint not supported by Coq backend"
+
+(* Definitions to help translate Isla trace values embedded in Coq into directly
+   translated Coq datatypes. *)
+let doc_isla_typ types_mod avoid_target_names (TD_aux (td, _)) =
+  let type_id_pp id = doc_id_type types_mod avoid_target_names None id in
+  let bare_ctxt = { empty_ctxt with avoid_target_names } in
+  match td with
+  | TD_record (id, typq, fs, _) ->
+      let fname fid = doc_id bare_ctxt fid in
+      let full_fname fid = doc_field_name bare_ctxt id fid in
+      separate hardline
+        [
+          string "#[export] Instance get_isla_" ^^ type_id_pp id ^^ string " : FromIslaValu " ^^ type_id_pp id
+          ^^ string " :=";
+          string "  fun v => match v with";
+          string "  | RegVal_Struct fields =>";
+          separate_map hardline
+            (fun (_, f) ->
+              string "    " ^^ fname f ^^ utf8string " ← get_field "
+              ^^ dquotes (fname f)
+              ^^ utf8string " fields ≫= from_isla;"
+            )
+            fs;
+          hang 4
+            (surround_separate_map 2 1 (string "    mret {| |}") (string "    mret {|")
+               (string ";" ^^ break 1)
+               (string "|}")
+               (fun (_, f) -> full_fname f ^^ string " := " ^^ fname f)
+               fs
+            );
+          string "  | _ => mthrow \"get_isla_" ^^ type_id_pp id ^^ string ": unexpected isla value\"";
+          string "  end.";
+          empty;
+          empty;
+        ]
+  | TD_enum (id, enums, _) -> (
+      match id with
+      | Id_aux (Id "read_kind", _) -> empty
+      | Id_aux (Id "write_kind", _) -> empty
+      | Id_aux (Id "a64_barrier_domain", _) -> empty
+      | Id_aux (Id "a64_barrier_type", _) -> empty
+      | Id_aux (Id "barrier_kind", _) -> empty
+      | Id_aux (Id "trans_kind", _) -> empty
+      | Id_aux (Id "instruction_kind", _) -> empty
+      | Id_aux (Id "cache_op_kind", _) -> empty
+      | Id_aux (Id "regfp", _) -> empty
+      | Id_aux (Id "niafp", _) -> empty
+      | Id_aux (Id "diafp", _) -> empty
+      | _ ->
+          hang 2
+            (string "#[export] Instance get_isla_" ^^ type_id_pp id ^^ string " : IslaEnum " ^^ type_id_pp id
+           ^^ string " :=" ^^ hardline
+            ^^ surround_separate_map 2 1 (brackets empty) lbracket
+                 (string ";" ^^ break 1)
+                 rbracket
+                 (fun id ->
+                   let idpp = doc_id_ctor bare_ctxt id in
+                   parens (dquotes idpp ^^ string ", " ^^ idpp)
+                 )
+                 enums
+            ^^ dot
+            )
+          ^^ hardline ^^ hardline
+    )
+  | TD_variant (id, typq, ar, _) -> (
+      match id with
+      | Id_aux (Id "read_kind", _) -> empty
+      | Id_aux (Id "write_kind", _) -> empty
+      | Id_aux (Id "a64_barrier_domain", _) -> empty
+      | Id_aux (Id "a64_barrier_type", _) -> empty
+      | Id_aux (Id "barrier_kind", _) -> empty
+      | Id_aux (Id "trans_kind", _) -> empty
+      | Id_aux (Id "instruction_kind", _) -> empty
+      (* | Id_aux ((Id "regfp"),_) -> empty
+         | Id_aux ((Id "niafp"),_) -> empty
+         | Id_aux ((Id "diafp"),_) -> empty *)
+      | Id_aux (Id "option", _) -> empty
+      | Id_aux (Id "register_value", _) -> empty
+      | _ ->
+          hang 2
+            (string "#[export] Instance get_isla_" ^^ type_id_pp id ^^ string " : FromIslaValu " ^^ type_id_pp id
+           ^^ string " :=" ^^ hardline ^^ string "fun v => match v with" ^^ hardline
+            ^^ hang 2
+                 (string "| RegVal_Constructor c v =>" ^^ hardline
+                 ^^ separate_map hardline
+                      (function
+                        | Tu_aux (Tu_ty_id (_, c_id), _) ->
+                            let c_pp = doc_id_ctor bare_ctxt c_id in
+                            string "if prefix \"" ^^ c_pp ^^ string ">\" c then " ^^ c_pp
+                            ^^ string " <$> from_isla v else"
+                        )
+                      ar
+                 ^^ hardline ^^ string "  mthrow \"get_isla_" ^^ type_id_pp id ^^ string ": unknown constructor\""
+                 )
+            ^^ hardline ^^ string "| _ => mthrow \"get_isla_" ^^ type_id_pp id ^^ string ": unexpected isla value\""
+            ^^ hardline ^^ string "end."
+            )
+          ^^ hardline ^^ hardline
+    )
+  | _ -> empty
+
+let doc_isla types_mod avoid_target_names (DEF_aux (aux, _)) =
+  match aux with
+  | DEF_type t_def ->
+      if List.mem (string_of_id (id_of_type_def t_def)) !opt_extern_types <> !opt_generate_extern_types then empty
+      else doc_isla_typ types_mod avoid_target_names t_def
+  | _ -> empty
 
 let find_exc_typ defs =
   let is_exc_typ_def = function
@@ -3345,7 +3521,7 @@ let builtin_target_names defs =
   in
   List.fold_left check_def StringSet.empty defs
 
-let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_module effect_info type_env
+let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_module opt_coq_isla effect_info type_env
     ({ defs; _ } as ast) concurrency_monad_params top_line suppress_MR_M =
   try
     (* let regtypes = find_regtypes d in *)
@@ -3362,7 +3538,9 @@ let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_m
     let unimplemented = find_unimplemented defs in
     let avoid_target_names = builtin_target_names defs in
     let bare_doc_id = doc_id { empty_ctxt with avoid_target_names } in
-    let register_refs = State.register_refs_coq bare_doc_id type_env (State.find_registers defs) in
+    let register_refs =
+      State.register_refs_coq bare_doc_id !opt_coq_record_update type_env (State.find_registers defs)
+    in
     let generic_eq_types = types_used_with_generic_eq defs in
     let interface_defs =
       match concurrency_monad_params with
@@ -3436,6 +3614,11 @@ let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_m
               (fun lib -> separate space [string "Require Import"; string lib] ^^ dot)
               types_modules;
             hardline;
+            ( if !opt_coq_record_update then
+                string "From RecordUpdate Require Import RecordSet."
+                ^^ hardline ^^ string "Import RecordSetNotations." ^^ hardline
+              else empty
+            );
             string "Import ListNotations.";
             hardline;
             string "Open Scope string.";
@@ -3466,6 +3649,11 @@ let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_m
                defs_modules;
              hardline;
              (if Option.is_some concurrency_monad_params then string "Import Defs." ^^ hardline else empty);
+             ( if !opt_coq_record_update then
+                 string "From RecordUpdate Require Import RecordSet."
+                 ^^ hardline ^^ string "Import RecordSetNotations." ^^ hardline
+               else empty
+             );
              string "Import ListNotations.";
              hardline;
              string "Open Scope string.";
@@ -3480,7 +3668,34 @@ let pp_ast_coq (types_file, types_modules) (defs_file, defs_modules) type_defs_m
              hardline;
              hardline;
            ]
-        )
+        );
+    match opt_coq_isla with
+    | None -> ()
+    | Some file ->
+        (print file)
+          (concat
+             [
+               string "(*" ^^ string top_line ^^ string "*)";
+               hardline;
+               (separate_map hardline)
+                 (fun lib -> separate space [string "Require Import"; string lib] ^^ dot)
+                 (("isla_lang.lang" :: defs_modules) @ ["IslaTranslation"]);
+               hardline;
+               string "Import ListNotations.";
+               hardline;
+               string "Open Scope string.";
+               hardline;
+               string "Open Scope bool.";
+               hardline;
+               string "Open Scope Z.";
+               hardline;
+               hardline;
+               hardline;
+               separate empty (List.map (doc_isla type_defs_module avoid_target_names) typdefs);
+               hardline;
+               hardline;
+             ]
+          )
   with Type_error.Type_error (l, err) ->
     let extra =
       "\nError during Coq printing\n"

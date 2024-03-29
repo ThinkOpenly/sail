@@ -9,9 +9,9 @@ supported. On older Ubuntu versions such as 18.04 you will not be able
 to use opam from the package manager, and will need to install it
 following the instructions on the opam website.
 
-Use `ocaml -version` to check your OCaml version. If you have OCaml 4.08 or newer, that's fine, otherwise use `opam switch` to install 4.08:
+Use `ocaml -version` to check your OCaml version. If you have OCaml 4.08.1 or newer, that's fine, otherwise you can use `opam switch` to install a newer version:
 ```
-opam switch create 4.08.0
+opam switch create 5.1.0
 ```
 and set up the environment for that OCaml version (note that older versions of opam suggest backticks instead of `$(...)`, but it makes no difference):
 ```
@@ -69,7 +69,11 @@ To remove the pin and revert to the latest released opam package type:
 opam pin remove sail
 ```
 
-### Building from source
+### Building from source (without opam)
+
+Note that if you are just interested in using development versions of Sail, rather than
+working the Sail source yourself, the above instructions using opam pin are likely better
+suited to your needs.
 
 opam can be used to just install Sail's dependencies. From within the Sail root directory run:
 ```
@@ -106,7 +110,7 @@ nor on a per-project basis, instead they are installed in
 *switches*. A switch has its own OCaml compiler version and set of
 libraries and executables. Earlier in this document we created a switch
 ```
-opam switch create 4.08.0
+opam switch create 5.1.0
 ```
 but you can create your own switch
 ```

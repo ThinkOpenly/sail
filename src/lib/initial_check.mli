@@ -77,9 +77,9 @@ val merge_ctx : Parse_ast.l -> ctx -> ctx -> ctx
 
 (** {2 Options} *)
 
-(** Generate undefined_T functions for every type T. False by
-   default. *)
-val opt_undefined_gen : bool ref
+(** Enable abstract types in the AST. If unset, will report an error
+    if they are encountered. *)
+val opt_abstract_types : bool ref
 
 (** Generate faster undefined_T functions. Rather than generating
    functions that allow for the undefined values of enums and variants
@@ -111,6 +111,10 @@ val undefined_builtin_val_specs : uannot def list
 
 (** {2 Desugar and process AST } *)
 
+val generate_undefined_record_context : typquant -> (id * typ) list
+val generate_undefined_record : id -> typquant -> (typ * id) list -> uannot def list
+val generate_undefined_enum : id -> id list -> uannot def list
+
 val generate_undefineds : IdSet.t -> uannot def list -> uannot def list
 val generate_enum_functions : IdSet.t -> uannot def list -> uannot def list
 
@@ -138,3 +142,6 @@ val constraint_of_string : string -> n_constraint
 val parse_file : ?loc:Parse_ast.l -> string -> Lexer.comment list * Parse_ast.def list
 
 val parse_file_from_string : filename:string -> contents:string -> Lexer.comment list * Parse_ast.def list
+
+val parse_project :
+  ?inline:Lexing.position -> ?filename:string -> contents:string -> unit -> Project.def Project.spanned list

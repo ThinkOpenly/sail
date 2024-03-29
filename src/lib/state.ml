@@ -142,7 +142,12 @@ let generate_regstate env registers =
       TD_record (mk_id "regstate", mk_typquant [], fields, false)
     )
   in
-  [DEF_aux (DEF_type (TD_aux (regstate_def, (Unknown, empty_uannot))), mk_def_annot Unknown)]
+  [
+    DEF_aux
+      ( DEF_type (TD_aux (regstate_def, (Unknown, empty_uannot))),
+        add_def_attribute Unknown "undefined_gen" "forbid" (mk_def_annot Unknown)
+      );
+  ]
 
 let generate_initial_regstate env ast =
   let initial_values =
@@ -712,7 +717,7 @@ let rec regval_convs_coq env (Typ_aux (t, _) as typ) =
       let id = string_of_id (regval_constr_id typ) in
       ("(fun v => " ^ id ^ "_of_regval v)", "(fun v => regval_of_" ^ id ^ " v)")
 
-let register_refs_coq doc_id env registers =
+let register_refs_coq doc_id coq_record_update env registers =
   let generic_convs =
     separate_map hardline string
       [
@@ -785,9 +790,9 @@ let register_refs_coq doc_id env registers =
         idd;
         string "));";
         hardline;
-        string "  write_to := (fun v s => ({[ s with ";
-        idd;
-        string " := v ]}));";
+        ( if coq_record_update then string "  write_to := (fun v s => (s <| " ^^ idd ^^ string " := v |>));"
+          else string "  write_to := (fun v s => ({[ s with " ^^ idd ^^ string " := v ]}));"
+        );
         hardline;
         string "  of_regval := ";
         string of_regval;
@@ -838,12 +843,6 @@ let register_refs_coq doc_id env registers =
 
 let generate_regstate_defs env ast =
   let defs = ast.defs in
-  (* FIXME We currently don't want to generate undefined_type functions
-     for register state and values.  For the Lem backend, this would require
-     taking the dependencies of those functions into account when partitioning
-     definitions into the different lem files, which we currently don't do. *)
-  let gen_undef = !Initial_check.opt_undefined_gen in
-  Initial_check.opt_undefined_gen := false;
   let registers = find_registers defs in
   let regtyps = List.map (fun (x, _, _) -> x) registers in
   let base_regtyps = register_base_types env regtyps in
@@ -869,7 +868,6 @@ let generate_regstate_defs env ast =
   in
   let typdefs, defs = List.partition (function DEF_aux (DEF_type _, _) -> true | _ -> false) defs in
   let valspecs, defs = List.partition (function DEF_aux (DEF_val _, _) -> true | _ -> false) defs in
-  Initial_check.opt_undefined_gen := gen_undef;
   typdefs @ valspecs @ defs
 
 let add_regstate_defs mwords env ast =

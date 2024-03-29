@@ -97,11 +97,13 @@ val get_attributes : uannot -> (l * string * string) list
 
 val find_attribute_opt : string -> (l * string * string) list -> string option
 
-val mk_def_annot : ?doc:string -> ?attrs:(l * string * string) list -> l -> def_annot
+val mk_def_annot : ?doc:string -> ?attrs:(l * string * string) list -> ?visibility:visibility -> l -> def_annot
 
 val add_def_attribute : l -> string -> string -> def_annot -> def_annot
 
 val get_def_attribute : string -> def_annot -> (l * string) option
+
+val remove_def_attribute : string -> def_annot -> def_annot
 
 val def_annot_map_loc : (l -> l) -> def_annot -> def_annot
 
@@ -117,6 +119,14 @@ val no_annot : l * uannot
 val gen_loc : Parse_ast.l -> Parse_ast.l
 
 val is_gen_loc : Parse_ast.l -> bool
+
+(** {1 Visibility modifiers} *)
+
+val is_private : visibility -> bool
+
+val is_public : visibility -> bool
+
+val visibility_loc : visibility -> Parse_ast.l
 
 (** {1 Variable information} *)
 
@@ -156,6 +166,7 @@ val mk_funcl : ?loc:l -> id -> uannot pat -> uannot exp -> uannot funcl
 val mk_fundef : uannot funcl list -> uannot def
 val mk_val_spec : val_spec_aux -> uannot def
 val mk_typschm : typquant -> typ -> typschm
+val mk_empty_typquant : loc:l -> typquant
 val mk_typquant : quant_item list -> typquant
 val mk_qi_id : kind_aux -> kid -> quant_item
 val mk_qi_nc : n_constraint -> quant_item
@@ -205,6 +216,8 @@ val is_typ_arg_nexp : typ_arg -> bool
 val is_typ_arg_typ : typ_arg -> bool
 val is_typ_arg_bool : typ_arg -> bool
 
+val typ_arg_kind : typ_arg -> kind
+
 (** {2 Sail built-in types} *)
 
 val unknown_typ : typ
@@ -220,6 +233,7 @@ val app_typ : id -> typ_arg list -> typ
 val register_typ : typ -> typ
 val unit_typ : typ
 val string_typ : typ
+val string_literal_typ : typ
 val real_typ : typ
 val vector_typ : nexp -> typ -> typ
 val bitvector_typ : nexp -> typ
@@ -245,6 +259,8 @@ val is_bitvector_typ : typ -> bool
 
 val nexp_simp : nexp -> nexp
 val constraint_simp : n_constraint -> n_constraint
+
+val get_nexp_constant : nexp -> Big_int.num option
 
 (** If a constraint is a conjunction, return a list of all the top-level conjuncts *)
 val constraint_conj : n_constraint -> n_constraint list
@@ -288,8 +304,9 @@ val nc_or : n_constraint -> n_constraint -> n_constraint
 val nc_not : n_constraint -> n_constraint
 val nc_true : n_constraint
 val nc_false : n_constraint
-val nc_set : kid -> Big_int.num list -> n_constraint
-val nc_int_set : kid -> int list -> n_constraint
+val nc_set : nexp -> Big_int.num list -> n_constraint
+val nc_int_set : nexp -> int list -> n_constraint
+val nc_id : id -> n_constraint
 val nc_var : kid -> n_constraint
 
 (** {2 Functions for building type arguments}*)
@@ -453,6 +470,7 @@ val string_of_index_range : index_range -> string
 
 val id_of_fundef : 'a fundef -> id
 val id_of_mapdef : 'a mapdef -> id
+val id_of_type_def_aux : type_def_aux -> id
 val id_of_type_def : 'a type_def -> id
 val id_of_val_spec : 'a val_spec -> id
 val id_of_dec_spec : 'a dec_spec -> id
@@ -470,7 +488,6 @@ val prepend_kid : string -> kid -> kid
 
 (** {1 Misc functions} *)
 
-val nexp_frees : nexp -> KidSet.t
 val nexp_identical : nexp -> nexp -> bool
 val is_nexp_constant : nexp -> bool
 val int_of_nexp_opt : nexp -> Big_int.num option

@@ -104,9 +104,42 @@ let rec is_src_typ typ =
       | None -> KidSet.is_empty (generated_kids typ)
     )
 
+(* When we can't find source-bound variables for individual type
+   variables, attempt to replace whole nexps instead. *)
+let replace_generated_nexps env typ =
+  let nexp_vars =
+    Env.get_typ_vars env |> KBindings.bindings
+    |> List.filter_map (function k, K_int -> Some k | _ -> None)
+    |> List.filter (fun k -> not (is_kid_generated k))
+  in
+  let rec aux_typ (Typ_aux (t, l)) =
+    match t with
+    | Typ_internal_unknown -> None
+    | Typ_id _ -> None
+    | Typ_var _ -> None
+    | Typ_fn _ -> assert false
+    | Typ_bidir _ -> assert false
+    | Typ_tuple typs ->
+        let typs' = Util.map_changed aux_typ typs in
+        Option.map (fun ts -> Typ_aux (Typ_tuple ts, l)) typs'
+    | Typ_app (f, args) ->
+        let args' = Util.map_changed aux_arg args in
+        Option.map (fun args -> Typ_aux (Typ_app (f, args), l)) args'
+    | Typ_exist (kopts, nc, typ') -> None (* TODO *)
+  and aux_arg (A_aux (a, l)) =
+    match a with
+    | A_typ typ -> Option.map (fun t -> A_aux (A_typ t, l)) (aux_typ typ)
+    | A_bool _ -> None
+    | A_nexp nexp ->
+        let v = List.find_opt (fun k -> prove __POS__ env (nc_eq (nvar k) nexp)) nexp_vars in
+        Option.map (fun v -> A_aux (A_nexp (nvar v), l)) v
+  in
+  Option.value (aux_typ typ) ~default:typ
+
 let resolve_generated_kids env typ =
   let subst_kid kid typ = subst_kid typ_subst kid (lookup_generated_kid env kid) typ in
-  KidSet.fold subst_kid (generated_kids typ) typ
+  let typ' = KidSet.fold subst_kid (generated_kids typ) typ in
+  if is_src_typ typ' then typ' else replace_generated_nexps env typ'
 
 let rec remove_p_typ = function P_aux (P_typ (typ, pat), _) -> remove_p_typ pat | pat -> pat
 
@@ -271,8 +304,8 @@ let rewrite_mapcl rewriters (MCL_aux (aux, def_annot)) =
   let aux =
     match aux with
     | MCL_bidir (mpexp1, mpexp2) -> MCL_bidir (rewrite_mpexp rewriters mpexp1, mpexp2)
-    | MCL_forwards (mpexp, exp) -> MCL_forwards (rewrite_mpexp rewriters mpexp, rewriters.rewrite_exp rewriters exp)
-    | MCL_backwards (mpexp, exp) -> MCL_backwards (rewrite_mpexp rewriters mpexp, rewriters.rewrite_exp rewriters exp)
+    | MCL_forwards pexp -> MCL_forwards (rewrite_pexp rewriters pexp)
+    | MCL_backwards pexp -> MCL_backwards (rewrite_pexp rewriters pexp)
   in
   MCL_aux (aux, def_annot)
 
@@ -295,8 +328,8 @@ let rec rewrite_def rewriters (DEF_aux (aux, def_annot)) =
     match aux with
     | DEF_register (DEC_aux (DEC_reg (typ, id, Some exp), annot)) ->
         DEF_register (DEC_aux (DEC_reg (typ, id, Some (rewriters.rewrite_exp rewriters exp)), annot))
-    | DEF_type _ | DEF_mapdef _ | DEF_val _ | DEF_default _ | DEF_register _ | DEF_overload _ | DEF_fixity _
-    | DEF_instantiation _ ->
+    | DEF_type _ | DEF_constraint _ | DEF_mapdef _ | DEF_val _ | DEF_default _ | DEF_register _ | DEF_overload _
+    | DEF_fixity _ | DEF_instantiation _ ->
         aux
     | DEF_fundef fdef -> DEF_fundef (rewriters.rewrite_fun rewriters fdef)
     | DEF_impl funcl -> DEF_impl (rewrite_funcl rewriters funcl)

@@ -358,7 +358,7 @@ let rec smt_cval ctx cval =
   | _ -> (
       match cval with
       | V_lit (vl, ctyp) -> smt_value ctx vl ctyp
-      | V_id (((Name (id, _) | Global (id, _)) as ssa_id), _) -> begin
+      | V_id ((Name (id, _) as ssa_id), _) -> begin
           match Type_check.Env.lookup_id id ctx.tc_env with
           | Enum _ -> Enum (zencode_id id)
           | _ when Bindings.mem id ctx.shared -> Shared (zencode_id id)
@@ -1350,13 +1350,13 @@ let smt_ctype_def ctx = function
       ]
 
 let rec generate_ctype_defs ctx = function
-  | CDEF_type ctd :: cdefs -> smt_ctype_def ctx ctd :: generate_ctype_defs ctx cdefs
+  | CDEF_aux (CDEF_type ctd, _) :: cdefs -> smt_ctype_def ctx ctd :: generate_ctype_defs ctx cdefs
   | _ :: cdefs -> generate_ctype_defs ctx cdefs
   | [] -> []
 
 let rec generate_reg_decs ctx inits = function
-  | CDEF_register (id, ctyp, _) :: cdefs when not (NameMap.mem (Global (id, 0)) inits) ->
-      Declare_const (zencode_name (Global (id, 0)), smt_ctyp ctx ctyp) :: generate_reg_decs ctx inits cdefs
+  | CDEF_aux (CDEF_register (id, ctyp, _), _) :: cdefs when not (NameMap.mem (Name (id, 0)) inits) ->
+      Declare_const (zencode_name (Name (id, 0)), smt_ctyp ctx ctyp) :: generate_reg_decs ctx inits cdefs
   | _ :: cdefs -> generate_reg_decs ctx inits cdefs
   | [] -> []
 
@@ -1848,7 +1848,7 @@ let smt_instr ctx =
       Reporting.unreachable l __POS__ "Register reference write should be re-written by now"
   | I_aux (I_init (ctyp, id, cval), _) | I_aux (I_copy (CL_id (id, ctyp), cval), _) -> begin
       match (id, cval) with
-      | (Name (id, _) | Global (id, _)), _ when IdSet.mem id ctx.preserved ->
+      | Name (id, _), _ when IdSet.mem id ctx.preserved ->
           [preserve_const ctx id ctyp (smt_conversion ctx (cval_ctyp cval) ctyp (smt_cval ctx cval))]
       | _, V_lit (VL_undefined, _) ->
           (* Declare undefined variables as arbitrary but fixed *)
@@ -1894,9 +1894,10 @@ let smt_cfnode all_cdefs ctx ssa_elems =
    keep track of any global letbindings between the spec and the
    fundef, so they can appear in the generated SMT. *)
 let rec find_function lets id = function
-  | CDEF_fundef (id', heap_return, args, body) :: _ when Id.compare id id' = 0 -> (lets, Some (heap_return, args, body))
-  | CDEF_let (_, vars, setup) :: cdefs ->
-      let vars = List.map (fun (id, ctyp) -> idecl (id_loc id) ctyp (global id)) vars in
+  | CDEF_aux (CDEF_fundef (id', heap_return, args, body), _) :: _ when Id.compare id id' = 0 ->
+      (lets, Some (heap_return, args, body))
+  | CDEF_aux (CDEF_let (_, vars, setup), _) :: cdefs ->
+      let vars = List.map (fun (id, ctyp) -> idecl (id_loc id) ctyp (name id)) vars in
       find_function (lets @ vars @ setup) id cdefs
   | _ :: cdefs -> find_function lets id cdefs
   | [] -> (lets, None)
@@ -2104,7 +2105,7 @@ let expand_reg_deref env register_map = function
                 let next_label = label "next_reg_write_" in
                 [
                   ijump l (V_call (Neq, [V_lit (VL_ref (string_of_id r), reg_ctyp); V_id (id, ctyp)])) next_label;
-                  ifuncall l (CL_id (global r, reg_ctyp)) function_id args;
+                  ifuncall l (CL_id (name r, reg_ctyp)) function_id args;
                   igoto end_label;
                   ilabel next_label;
                 ]
@@ -2132,7 +2133,7 @@ let expand_reg_deref env register_map = function
                       let next_label = label "next_reg_deref_" in
                       [
                         ijump l (V_call (Neq, [V_lit (VL_ref (string_of_id r), reg_ctyp); reg_ref])) next_label;
-                        icopy l clexp (V_id (global r, reg_ctyp));
+                        icopy l clexp (V_id (name r, reg_ctyp));
                         igoto end_label;
                         ilabel next_label;
                       ]
@@ -2155,7 +2156,7 @@ let expand_reg_deref env register_map = function
                 let next_label = label "next_reg_write_" in
                 [
                   ijump l (V_call (Neq, [V_lit (VL_ref (string_of_id r), reg_ctyp); V_id (id, ctyp)])) next_label;
-                  icopy l (CL_id (global r, reg_ctyp)) cval;
+                  icopy l (CL_id (name r, reg_ctyp)) cval;
                   igoto end_label;
                   ilabel next_label;
                 ]
@@ -2218,7 +2219,8 @@ let smt_instr_list name ctx all_cdefs instrs =
 
   (stack, start, cfg)
 
-let smt_cdef props lets name_file ctx all_cdefs = function
+let smt_cdef props lets name_file ctx all_cdefs smt_includes (CDEF_aux (aux, _)) =
+  match aux with
   | CDEF_val (function_id, _, arg_ctyps, ret_ctyp) when Bindings.mem function_id props -> begin
       match find_function [] function_id all_cdefs with
       | intervening_lets, Some (None, args, instrs) ->
@@ -2257,8 +2259,14 @@ let smt_cdef props lets name_file ctx all_cdefs = function
 
           let header = smt_header ctx all_cdefs in
 
-          if !(ctx.use_string) || !(ctx.use_real) then output_string out_chan "(set-logic ALL)\n"
-          else output_string out_chan "(set-logic QF_AUFBVDT)\n";
+          (* If the solver is Z3, don't output a logic as Z3 will infer it. *)
+          begin
+            match !opt_auto_solver with
+            | Z3 -> ()
+            | _ ->
+                if !(ctx.use_string) || !(ctx.use_real) then output_string out_chan "(set-logic ALL)\n"
+                else output_string out_chan "(set-logic QF_AUFBVFPDT)\n"
+          end;
 
           List.iter
             (fun def ->
@@ -2266,6 +2274,9 @@ let smt_cdef props lets name_file ctx all_cdefs = function
               output_string out_chan "\n"
             )
             header;
+
+          (* Include custom SMT definitions. *)
+          List.iter (fun include_file -> output_string out_chan (Util.read_whole_file include_file)) smt_includes;
 
           let queue = Queue_optimizer.optimize stack in
           Queue.iter
@@ -2295,13 +2306,13 @@ let smt_cdef props lets name_file ctx all_cdefs = function
     end
   | _ -> ()
 
-let rec smt_cdefs props lets name_file ctx ast = function
-  | CDEF_let (_, vars, setup) :: cdefs ->
-      let vars = List.map (fun (id, ctyp) -> idecl (id_loc id) ctyp (global id)) vars in
-      smt_cdefs props (lets @ vars @ setup) name_file ctx ast cdefs
+let rec smt_cdefs props lets name_file ctx ast smt_includes = function
+  | CDEF_aux (CDEF_let (_, vars, setup), _) :: cdefs ->
+      let vars = List.map (fun (id, ctyp) -> idecl (id_loc id) ctyp (name id)) vars in
+      smt_cdefs props (lets @ vars @ setup) name_file ctx ast smt_includes cdefs
   | cdef :: cdefs ->
-      smt_cdef props lets name_file ctx ast cdef;
-      smt_cdefs props lets name_file ctx ast cdefs
+      smt_cdef props lets name_file ctx ast smt_includes cdef;
+      smt_cdefs props lets name_file ctx ast smt_includes cdefs
   | [] -> ()
 
 (* In order to support register references, we need to build a map
@@ -2310,7 +2321,7 @@ let rec smt_cdefs props lets name_file ctx ast = function
    all the registers that such a reference could be pointing to.
 *)
 let rec build_register_map rmap = function
-  | CDEF_register (reg, ctyp, _) :: cdefs ->
+  | CDEF_aux (CDEF_register (reg, ctyp, _), _) :: cdefs ->
       let rmap =
         match CTMap.find_opt ctyp rmap with
         | Some regs -> CTMap.add ctyp (reg :: regs) rmap
@@ -2352,8 +2363,8 @@ let deserialize_smt_model file =
   close_in in_chan;
   (cdefs, { (initial_ctx ()) with tc_env = env; register_map = rmap })
 
-let generate_smt props name_file env effect_info ast =
+let generate_smt props name_file env effect_info smt_includes ast =
   try
     let cdefs, _, ctx = compile env effect_info ast in
-    smt_cdefs props [] name_file ctx cdefs cdefs
+    smt_cdefs props [] name_file ctx cdefs smt_includes cdefs
   with Type_error.Type_error (l, err) -> raise (Reporting.err_typ l (Type_error.string_of_type_error err))

@@ -102,6 +102,11 @@ val assoc_compare_opt : ('a -> 'a -> int) -> 'a -> ('a * 'b) list -> 'b option
 
 val power : int -> int -> int
 
+(** Apply a function to the last element of a list *)
+val update_last : ('a -> 'a) -> 'a list -> 'a list
+
+val update_first : ('a -> 'a) -> 'a list -> 'a list
+
 (** Map but pass true to the function for the last element *)
 val map_last : (bool -> 'a -> 'b) -> 'a list -> 'b list
 
@@ -168,8 +173,12 @@ val map_split : ('a -> ('b, 'c) result) -> 'a list -> 'b list * 'c list
     the [Some] function is removed from the list. *)
 val map_all : ('a -> 'b option) -> 'a list -> 'b list option
 
+val map_if : ('a -> bool) -> ('a -> 'a) -> 'a list -> 'a list
+
+val map_exists : ('b -> bool) -> ('a -> 'b) -> 'a list -> bool
+
 (** [list_to_front i l] resorts the list [l] by bringing the element at index [i]
-    to the front. 
+    to the front.
     @throws Failure if [i] is not smaller than the length of [l]*)
 val list_to_front : int -> 'a list -> 'a list
 
@@ -210,6 +219,12 @@ val fold_left_index_last : (int -> bool -> 'a -> 'b -> 'a) -> 'a -> 'b list -> '
 
 val list_init : int -> (int -> 'a) -> 'a list
 
+(** Compute the levenshtein distance between two strings using the
+    Wagner–Fischer algorithm. If [~osa] is true computes the optimal
+    string alignment distance, which is similar but allows swaps as a
+    single action. *)
+val levenshtein_distance : ?osa:bool -> string -> string -> int
+
 (** {2 Files} *)
 
 (** [copy_file src dst] copies file [src] to file [dst]. Only files are supported,
@@ -231,15 +246,22 @@ If at least one of the files does not exist, [false] is returned. [same_content_
 if one of the files exists, but cannot be read. *)
 val same_content_files : string -> string -> bool
 
+(** [read_whole_file filename] reads the contents of the file and returns it as a string. *)
+val read_whole_file : string -> string
+
 (** {2 Strings} *)
 
 (** [string_to_list l] translates the string [l] to the list of its characters. *)
 val string_to_list : string -> char list
 
-(** {2 Useful Sets} *)
+(** {2 Useful sets} *)
 
 (** Sets of Integers *)
-module IntSet : Set.S with type elt = int
+module IntSet : Set.S with type elt = int and type t = Set.Make(Int).t
+
+module IntMap : Map.S with type key = int and type 'a t = 'a Map.Make(Int).t
+
+module StringMap : Map.S with type key = string and type 'a t = 'a Map.Make(String).t
 
 module IntIntSet : Set.S with type elt = int * int
 

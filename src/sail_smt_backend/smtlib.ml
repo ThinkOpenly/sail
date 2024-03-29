@@ -70,6 +70,15 @@ open Libsail
 open Ast
 open Ast_util
 
+type counterexample_solver = Cvc5 | Cvc4 | Z3
+
+let counterexample_command = function Cvc5 -> "cvc5 --lang=smt2.6" | Cvc4 -> "cvc4 --lang=smt2.6" | Z3 -> "z3"
+
+let counterexample_solver_from_name name =
+  match String.lowercase_ascii name with "cvc4" -> Some Cvc4 | "cvc5" -> Some Cvc5 | "z3" -> Some Z3 | _ -> None
+
+let opt_auto_solver = ref Cvc5
+
 type smt_typ =
   | Bitvec of int
   | Bool
@@ -615,24 +624,60 @@ let parse_sexps input =
   let tokens = List.filter non_whitespace tokens in
   match plist sexp tokens with Ok (result, _) -> result | Fail -> failwith "Parse failure"
 
-let value_of_sexpr sexpr =
+let parse_sexpr_int width = function
+  | List [Atom "_"; Atom v; Atom m] when int_of_string m = width && String.length v > 2 && String.sub v 0 2 = "bv" ->
+      let v = String.sub v 2 (String.length v - 2) in
+      Some (Big_int.of_string v)
+  | Atom v when String.length v > 2 && String.sub v 0 2 = "#b" ->
+      let v = String.sub v 2 (String.length v - 2) in
+      Some (Big_int.of_string ("0b" ^ v))
+  | Atom v when String.length v > 2 && String.sub v 0 2 = "#x" ->
+      let v = String.sub v 2 (String.length v - 2) in
+      Some (Big_int.of_string ("0x" ^ v))
+  | _ -> None
+
+let rec value_of_sexpr sexpr =
   let open Jib in
   let open Value in
   function
-  | CT_fbits n -> begin
-      match sexpr with
-      | List [Atom "_"; Atom v; Atom m] when int_of_string m = n && String.length v > 2 && String.sub v 0 2 = "bv" ->
-          let v = String.sub v 2 (String.length v - 2) in
-          mk_vector (Sail_lib.get_slice_int' (n, Big_int.of_string v, 0))
-      | Atom v when String.length v > 2 && String.sub v 0 2 = "#b" ->
-          let v = String.sub v 2 (String.length v - 2) in
-          mk_vector (Sail_lib.get_slice_int' (n, Big_int.of_string ("0b" ^ v), 0))
-      | Atom v when String.length v > 2 && String.sub v 0 2 = "#x" ->
-          let v = String.sub v 2 (String.length v - 2) in
-          mk_vector (Sail_lib.get_slice_int' (n, Big_int.of_string ("0x" ^ v), 0))
-      | _ -> failwith ("Cannot parse sexpr as ctyp: " ^ string_of_sexpr sexpr)
+  | CT_fbits width -> begin
+      match parse_sexpr_int width sexpr with
+      | Some value -> mk_vector (Sail_lib.get_slice_int' (width, value, 0))
+      | None -> failwith ("Cannot parse sexpr as bitvector: " ^ string_of_sexpr sexpr)
     end
-  | cty -> failwith ("Unsupported type in sexpr: " ^ Jib_util.string_of_ctyp cty)
+  | CT_struct (_, fields) -> begin
+      match sexpr with
+      | List (Atom name :: smt_fields) ->
+          V_record
+            (List.fold_left2
+               (fun m (field_id, ctyp) sexpr -> StringMap.add (string_of_id field_id) (value_of_sexpr sexpr ctyp) m)
+               StringMap.empty fields smt_fields
+            )
+      | _ -> failwith ("Cannot parse sexpr as struct " ^ string_of_sexpr sexpr)
+    end
+  | CT_enum (_, members) -> begin
+      match sexpr with
+      | Atom name -> begin
+          match List.find_opt (fun member -> Util.zencode_string (string_of_id member) = name) members with
+          | Some member -> V_member (string_of_id member)
+          | None ->
+              failwith
+                ("Could not find enum member for " ^ name ^ " in " ^ Util.string_of_list ", " string_of_id members)
+        end
+      | _ -> failwith ("Cannot parse sexpr as enum " ^ string_of_sexpr sexpr)
+    end
+  | CT_bool -> begin
+      match sexpr with
+      | Atom "true" -> V_bool true
+      | Atom "false" -> V_bool false
+      | _ -> failwith ("Cannot parse sexpr as bool " ^ string_of_sexpr sexpr)
+    end
+  | CT_fint width -> begin
+      match parse_sexpr_int width sexpr with
+      | Some value -> V_int value
+      | None -> failwith ("Cannot parse sexpr as fixed-width integer: " ^ string_of_sexpr sexpr)
+    end
+  | ctyp -> failwith ("Unsupported type in sexpr: " ^ Jib_util.string_of_ctyp ctyp)
 
 let rec find_arg id ctyp arg_smt_names = function
   | List [Atom "define-fun"; Atom str; List []; _; value] :: _
@@ -654,8 +699,8 @@ let rec run frame =
 
 let check_counterexample ast env fname function_id args arg_ctyps arg_smt_names =
   let open Printf in
-  prerr_endline ("Checking counterexample: " ^ fname);
-  let in_chan = ksprintf Unix.open_process_in "cvc4 --lang=smt2.6 %s" fname in
+  print_endline ("Checking counterexample: " ^ fname);
+  let in_chan = ksprintf Unix.open_process_in "%s %s" (counterexample_command !opt_auto_solver) fname in
   let lines = ref [] in
   begin
     try
@@ -664,15 +709,15 @@ let check_counterexample ast env fname function_id args arg_ctyps arg_smt_names 
       done
     with End_of_file -> ()
   end;
-  let solver_output = List.rev !lines |> String.concat "\n" |> parse_sexps in
+  let solver_output = List.rev !lines |> String.concat "\n" in
   begin
-    match solver_output with
-    | Atom "sat" :: List (Atom "model" :: model) :: _ ->
+    match solver_output |> parse_sexps with
+    | Atom "sat" :: (List (Atom "model" :: model) | List model) :: _ ->
         let open Value in
         let open Interpreter in
-        prerr_endline (sprintf "Solver found counterexample: %s" Util.("ok" |> green |> clear));
+        print_endline (sprintf "Solver found counterexample: %s" Util.("ok" |> green |> clear));
         let counterexample = build_counterexample args arg_ctyps arg_smt_names model in
-        List.iter (fun (id, v) -> prerr_endline ("  " ^ string_of_id id ^ " -> " ^ string_of_value v)) counterexample;
+        List.iter (fun (id, v) -> print_endline ("  " ^ string_of_id id ^ " -> " ^ string_of_value v)) counterexample;
         let istate = initial_state ast env !primops in
         let annot = (Parse_ast.Unknown, Type_check.mk_tannot env bool_typ) in
         let call =
@@ -690,10 +735,16 @@ let check_counterexample ast env fname function_id args arg_ctyps arg_smt_names 
         begin
           match result with
           | Some (V_bool false) | None ->
-              ksprintf prerr_endline "Replaying counterexample: %s" Util.("ok" |> green |> clear)
+              ksprintf print_endline "Replaying counterexample: %s" Util.("ok" |> green |> clear)
           | _ -> ()
         end
-    | _ -> prerr_endline "Solver could not find counterexample"
+    | Atom "unsat" :: _ ->
+        print_endline "Solver could not find counterexample";
+        print_endline "Solver output:";
+        print_endline solver_output
+    | _ ->
+        print_endline "Unexpected solver output:";
+        print_endline solver_output
   end;
   let status = Unix.close_process_in in_chan in
   ()

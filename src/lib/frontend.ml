@@ -72,6 +72,7 @@ module StringMap = Map.Make (String)
 
 let opt_ddump_initial_ast = ref false
 let opt_ddump_tc_ast = ref false
+let opt_list_files = ref false
 let opt_reformat : string option ref = ref None
 
 let check_ast (asserts_termination : bool) (env : Type_check.Env.t) (ast : uannot ast) :
@@ -83,9 +84,114 @@ let check_ast (asserts_termination : bool) (env : Type_check.Env.t) (ast : uanno
   let () = if !opt_ddump_tc_ast then Pretty_print_sail.pp_ast stdout (Type_check.strip_ast ast) else () in
   (ast, env, side_effects)
 
-let load_files ?target default_sail_dir options type_envs files =
-  let t = Profile.start () in
+let instantiate_abstract_types insts ast =
+  let open Ast in
+  let instantiate = function
+    | DEF_aux (DEF_type (TD_aux (TD_abstract (id, kind), (l, _))), def_annot) as def -> begin
+        match Bindings.find_opt id insts with
+        | Some arg ->
+            let arg_kind = typ_arg_kind arg in
+            if Kind.compare arg_kind kind <> 0 then
+              raise
+                (Reporting.err_general l
+                   (Printf.sprintf
+                      "Failed to instantiate abstract type. Abstract type has kind %s, but instantiation has kind %s"
+                      (string_of_kind kind) (string_of_kind arg_kind)
+                   )
+                );
+            DEF_aux
+              ( DEF_type (TD_aux (TD_abbrev (id, mk_empty_typquant ~loc:(gen_loc l), arg), (l, Type_check.empty_tannot))),
+                def_annot
+              )
+        | None -> def
+      end
+    | def -> def
+  in
+  { ast with defs = List.map instantiate ast.defs }
 
+type parsed_module = {
+  id : Project.mod_id;
+  included : bool;
+  files : (string * (Lexer.comment list * Parse_ast.def list)) list;
+}
+
+let wrap_module proj parsed_module =
+  let module P = Parse_ast in
+  let open Project in
+  let name, l = module_name proj parsed_module.id in
+  let bracket_pragma p = P.DEF_aux (P.DEF_pragma (p, name, 1), to_loc l) in
+  parsed_module.files
+  |> Util.update_first (fun (f, (comments, defs)) -> (f, (comments, bracket_pragma "start_module#" :: defs)))
+  |> Util.update_last (fun (f, (comments, defs)) -> (f, (comments, defs @ [bracket_pragma "end_module#"])))
+
+let process_ast target type_envs ast =
+  if !opt_ddump_initial_ast then Pretty_print_sail.pp_ast stdout ast;
+
+  begin
+    match !opt_reformat with
+    | Some dir ->
+        Pretty_print_sail.reformat dir ast;
+        exit 0
+    | None -> ()
+  end;
+
+  (* The separate loop measures declarations would be awkward to type check, so
+     move them into the definitions beforehand. *)
+  let ast = Rewrites.move_loop_measures ast in
+
+  let t = Profile.start () in
+  let asserts_termination = Option.fold ~none:false ~some:Target.asserts_termination target in
+  let ast, type_envs, side_effects = check_ast asserts_termination type_envs ast in
+  Profile.finish "type checking" t;
+
+  (ast, type_envs, side_effects)
+
+let load_modules ?target default_sail_dir options type_envs proj root_mod_ids =
+  let open Project in
+  let mod_ids = module_order proj in
+  let is_included = required_modules proj ~roots:(ModSet.of_list root_mod_ids) in
+
+  let parsed_modules =
+    List.map
+      (fun mod_id ->
+        let files = module_files proj mod_id in
+        {
+          id = mod_id;
+          included = is_included mod_id;
+          files = List.map (fun f -> (fst f, Initial_check.parse_file (fst f))) files;
+        }
+      )
+      mod_ids
+  in
+
+  if !opt_list_files then (
+    let included_files =
+      List.map (fun parsed_module -> if parsed_module.included then parsed_module.files else []) parsed_modules
+      |> List.concat
+    in
+    print_endline (Util.string_of_list " " fst included_files);
+    exit 0
+  );
+
+  let comments =
+    List.map (fun m -> List.map (fun (f, (comments, _)) -> (f, comments)) m.files) parsed_modules |> List.concat
+  in
+  let target_name = Option.map Target.name target in
+
+  let ast =
+    let files = List.concat (List.map (wrap_module proj) parsed_modules) in
+    let files =
+      List.map
+        (fun (f, (_, file_ast)) -> (f, Preprocess.preprocess default_sail_dir target_name options file_ast))
+        files
+    in
+    Parse_ast.Defs files
+  in
+  let ast = Initial_check.process_ast ~generate:true ast in
+  let ast = { ast with comments } in
+  process_ast target type_envs ast
+
+let load_files ?target default_sail_dir options type_envs files =
   let parsed_files = List.map (fun f -> (f, Initial_check.parse_file f)) files in
 
   let comments = List.map (fun (f, (comments, _)) -> (f, comments)) parsed_files in
@@ -99,28 +205,7 @@ let load_files ?target default_sail_dir options type_envs files =
   in
   let ast = Initial_check.process_ast ~generate:true ast in
   let ast = { ast with comments } in
-
-  let () = if !opt_ddump_initial_ast then Pretty_print_sail.pp_ast stdout ast else () in
-
-  begin
-    match !opt_reformat with
-    | Some dir ->
-        Pretty_print_sail.reformat dir ast;
-        exit 0
-    | None -> ()
-  end;
-
-  (* The separate loop measures declarations would be awkward to type check, so
-     move them into the definitions beforehand. *)
-  let ast = Rewrites.move_loop_measures ast in
-  Profile.finish "parsing" t;
-
-  let t = Profile.start () in
-  let asserts_termination = Option.fold ~none:false ~some:Target.asserts_termination target in
-  let ast, type_envs, side_effects = check_ast asserts_termination type_envs ast in
-  Profile.finish "type checking" t;
-
-  (ast, type_envs, side_effects)
+  process_ast target type_envs ast
 
 let rewrite_ast_initial effect_info env =
   Rewrites.rewrite effect_info env

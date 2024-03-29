@@ -130,6 +130,7 @@ let rec constraint_ids' (NC_aux (aux, _)) =
       IdSet.union (nexp_ids' n1) (nexp_ids' n2)
   | NC_or (nc1, nc2) | NC_and (nc1, nc2) -> IdSet.union (constraint_ids' nc1) (constraint_ids' nc2)
   | NC_var _ | NC_true | NC_false | NC_set _ -> IdSet.empty
+  | NC_id id -> IdSet.singleton id
   | NC_app (id, args) -> IdSet.add id (List.fold_left IdSet.union IdSet.empty (List.map typ_arg_ids' args))
 
 and nexp_ids' (Nexp_aux (aux, _)) =
@@ -139,6 +140,7 @@ and nexp_ids' (Nexp_aux (aux, _)) =
   | Nexp_var _ | Nexp_constant _ -> IdSet.empty
   | Nexp_exp n | Nexp_neg n -> nexp_ids' n
   | Nexp_times (n1, n2) | Nexp_sum (n1, n2) | Nexp_minus (n1, n2) -> IdSet.union (nexp_ids' n1) (nexp_ids' n2)
+  | Nexp_if (i, t, e) -> IdSet.union (constraint_ids' i) (IdSet.union (nexp_ids' t) (nexp_ids' e))
 
 and typ_ids' (Typ_aux (aux, _)) =
   match aux with
@@ -278,6 +280,7 @@ let add_def_to_graph graph (DEF_aux (def, _)) =
         scan_typquant (Type id) typq
     | TD_enum (id, ctors, _) ->
         List.iter (fun ctor_id -> graph := G.add_edge (Constructor ctor_id) (Type id) !graph) ctors
+    | TD_abstract (id, _) -> graph := G.add_edges (Type id) [] !graph
     | TD_bitfield (id, typ, ranges) ->
         graph := G.add_edges (Type id) (List.map (fun id -> Type id) (IdSet.elements (typ_ids typ))) !graph
   in
@@ -378,14 +381,6 @@ let rec graph_of_defs defs =
 
 let graph_of_ast ast = graph_of_defs ast.defs
 
-let id_of_typedef (TD_aux (aux, _)) =
-  match aux with
-  | TD_abbrev (id, _, _) -> id
-  | TD_record (id, _, _, _) -> id
-  | TD_variant (id, _, _, _) -> id
-  | TD_enum (id, _, _) -> id
-  | TD_bitfield (id, _, _) -> id
-
 let id_of_reg_dec (DEC_aux (DEC_reg (_, id, _), _)) = id
 
 let id_of_funcl (FCL_aux (FCL_funcl (id, _), _)) = id
@@ -408,11 +403,17 @@ let filter_ast_extra cuts g ast keep_std =
     | DEF_aux (DEF_register rdec, def_annot) :: defs when NM.mem (Register (id_of_reg_dec rdec)) g ->
         DEF_aux (DEF_register rdec, def_annot) :: filter_ast' g defs
     | DEF_aux (DEF_register _, _) :: defs -> filter_ast' g defs
-    | DEF_aux (DEF_overload (id, overloads), def_annot) :: defs ->
-        let cut_overload overload =
-          NS.mem (Function overload) cuts || NS.mem (Constructor overload) cuts || NS.mem (Overload overload) cuts
+    | DEF_aux (DEF_overload (id, overloads), def_annot) :: defs -> begin
+        let keep_overload overload =
+          (NM.mem (Function overload) g || NM.mem (Constructor overload) g || NM.mem (Overload overload) g)
+          && not
+               (NS.mem (Function overload) cuts || NS.mem (Constructor overload) cuts || NS.mem (Overload overload) cuts)
         in
-        DEF_aux (DEF_overload (id, List.filter cut_overload overloads), def_annot) :: filter_ast' g defs
+        let filtered = List.filter keep_overload overloads in
+        match filtered with
+        | [] -> filter_ast' g defs
+        | _ -> DEF_aux (DEF_overload (id, filtered), def_annot) :: filter_ast' g defs
+      end
     | DEF_aux (DEF_val vs, def_annot) :: defs when NM.mem (Function (id_of_val_spec vs)) g ->
         DEF_aux (DEF_val vs, def_annot) :: filter_ast' g defs
     | DEF_aux (DEF_val _, _) :: defs -> filter_ast' g defs
@@ -420,7 +421,7 @@ let filter_ast_extra cuts g ast keep_std =
         let ids = pat_ids pat |> IdSet.elements in
         if List.exists (fun id -> NM.mem (Letbind id) g) ids then DEF_aux (DEF_let lb, def_annot) :: filter_ast' g defs
         else filter_ast' g defs
-    | DEF_aux (DEF_type tdef, def_annot) :: defs when NM.mem (Type (id_of_typedef tdef)) g ->
+    | DEF_aux (DEF_type tdef, def_annot) :: defs when NM.mem (Type (id_of_type_def tdef)) g ->
         DEF_aux (DEF_type tdef, def_annot) :: filter_ast' g defs
     | DEF_aux (DEF_type _, _) :: defs -> filter_ast' g defs
     | DEF_aux (DEF_measure (id, _, _), _) :: defs when NS.mem (Function id) cuts -> filter_ast' g defs

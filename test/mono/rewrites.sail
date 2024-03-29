@@ -11,6 +11,18 @@ function sign_ext_fun(y, z, n) = {
   sail_sign_extend(y[7..4] @ sail_zeros(z), n)
 }
 
+// Should become 0b1 @ slice_mask(...)
+// We take a dummy bitvector argument because the rewrites on their own aren't enough for Lem to have
+// a type for 'm + 'n.
+val fixed_then_mask : forall 'm 'n, 'm >= 0 & 'n >= 0. (int('m), int('n), bits('m + 'n)) -> bits('m + 'n + 1)
+function fixed_then_mask(m, n, _) = 0b1 @ sail_ones(m) @ sail_zeros(n)
+
+val zero_ones : forall 'm, 'm > 0. int('m) -> bits('m)
+function zero_ones(m) = 0b0 @ sail_ones(m - 1)
+
+val zeros_ones : forall 'm 'n, 'm > 0 & 0 < 'n < 'm. (int('m), int('n)) -> bits('m)
+function zeros_ones(m, n) = sail_zeros(m-n) @ sail_ones(n)
+
 val zero_subrange : forall 'n, 2 < 'n & 'n < 8. (int('n), bits(8)) -> bool
 function zero_subrange(n, x) = x[n..2] == sail_zeros(n - 2 + 1)
 
@@ -38,4 +50,8 @@ function run() = {
     assert(not_bool(zero_subrange(4, 0b11101011)));
     assert(not_bool(ones_subrange(4, 0x00)));
     assert(not_bool(ones_subrange(4, 0b00010100)));
+    assert(fixed_then_mask(4,4,0b00000000) == 0b111110000);
+    assert(zero_ones(4) == 0b0111);
+    assert(zeros_ones(4,3) == 0b0111);
+    assert(zeros_ones(6,3) == 0b000111);
 }

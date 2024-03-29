@@ -128,12 +128,19 @@ val register :
   (Yojson.Basic.t option -> string -> string option -> tannot ast -> Effects.side_effect_info -> Env.t -> unit) ->
   target
 
+(** Use if you want to register a target that does nothing *)
+val empty_action :
+  Yojson.Basic.t option -> string -> string option -> tannot ast -> Effects.side_effect_info -> Env.t -> unit
+
 (** Return the current target. For example, if we register a 'coq'
    target, and Sail is invoked with `sail -coq`, then this function
    will return the coq target. *)
 val get_the_target : unit -> target option
 
 val get : name:string -> target option
+
+(** Used internally when updating the option list during plugin loading *)
+val extract_registered : unit -> string list
 
 (** Used internally to dynamically update the option list when loading plugins *)
 val extract_options : unit -> (Arg.key * Arg.spec * Arg.doc) list

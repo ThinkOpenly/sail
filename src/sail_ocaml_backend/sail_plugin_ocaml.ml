@@ -127,9 +127,8 @@ let ocaml_target _ default_sail_dir out_file ast effect_info env =
   Ocaml_backend.ocaml_compile default_sail_dir out ast !ocaml_generator_info
 
 let _ =
-  Target.register ~name:"ocaml" ~options:ocaml_options
-    ~pre_parse_hook:(fun () -> Initial_check.opt_undefined_gen := true)
-    ~pre_rewrites_hook:stash_pre_rewrite_info ~rewrites:ocaml_rewrites ocaml_target
+  Target.register ~name:"ocaml" ~options:ocaml_options ~pre_rewrites_hook:stash_pre_rewrite_info
+    ~rewrites:ocaml_rewrites ocaml_target
 
 let opt_tofrominterp_output_dir : string option ref = ref None
 
@@ -169,7 +168,7 @@ let tofrominterp_target _ _ out_file ast _ _ =
 
 let _ =
   Target.register ~name:"tofrominterp"
-    ~description:"output OCaml functions to translate between shallow embedding and interpreter"
+    ~description:" output OCaml functions to translate between shallow embedding and interpreter"
     ~options:tofrominterp_options ~rewrites:tofrominterp_rewrites tofrominterp_target
 
 let marshal_target _ _ out_file ast _ env =
@@ -184,5 +183,5 @@ let marshal_target _ _ out_file ast _ env =
   close_out f
 
 let _ =
-  Target.register ~name:"marshal" ~description:"OCaml-marshal out the rewritten AST to a file"
+  Target.register ~name:"marshal" ~description:" OCaml-marshal out the rewritten AST to a file"
     ~rewrites:tofrominterp_rewrites marshal_target

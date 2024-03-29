@@ -21,7 +21,7 @@ metavar nat ::=
   {{ lex numeric }}
   {{ lem nat }}
   {{ isa nat }}
-  
+
 metavar hex ::=
   {{ phantom }}
   {{ lex numeric }}
@@ -84,7 +84,14 @@ type loop = While | Until
 
 type extern = { pure : bool; bindings : (string * string) list } option
 
-type def_annot = { doc_comment : string option; attrs : (l * string * string) list; loc : l }
+type visibility = Public | Private of  l
+
+type def_annot = {
+    doc_comment : string option;
+    attrs : (l * string * string) list;
+    visibility : visibility;
+    loc : l
+}
 
 type 'a clause_annot = def_annot * 'a
 
@@ -103,7 +110,14 @@ type annot 'a = l * 'a
 
 type extern = <| pure : bool; bindings : list (string * string) |>
 
-type def_annot = <| doc_comment : maybe string; attrs : list (l * string * string); loc: l |>
+type visibility = Public | Private of l
+
+type def_annot = <|
+    doc_comment : maybe string;
+    attrs : list (l * string * string);
+    visibility : visibility;
+    loc : l
+|>
 
 type clause_annot 'a = def_annot * 'a
 
@@ -204,16 +218,17 @@ kind :: 'K_' ::=
 nexp :: 'Nexp_' ::=
   {{ com numeric expression, of kind Int }}
   {{ aux _ l }}
-  | id                         :: :: id       {{ com abbreviation identifier }}
-  | kid                        :: :: var      {{ com variable }}
-  | num                        :: :: constant {{ com constant }}
-  | id ( nexp1 , ... , nexpn ) :: :: app      {{ com app }}
-  | nexp1 * nexp2              :: :: times    {{ com product }}
-  | nexp1 + nexp2              :: :: sum      {{ com sum }}
-  | nexp1 - nexp2              :: :: minus    {{ com subtraction }}
-  | 2 ^ nexp                   :: :: exp      {{ com exponential }}
-  | - nexp                     :: :: neg      {{ com unary negation}}
-  | ( nexp )                   :: S :: paren  {{ ichlo [[nexp]] }}
+  | id                                    :: :: id       {{ com abbreviation identifier }}
+  | kid                                   :: :: var      {{ com variable }}
+  | num                                   :: :: constant {{ com constant }}
+  | id ( nexp1 , ... , nexpn )            :: :: app      {{ com app }}
+  | if n_constraint then nexp1 else nexp2 :: :: if       {{ com if-then-else }}
+  | nexp1 * nexp2                         :: :: times    {{ com product }}
+  | nexp1 + nexp2                         :: :: sum      {{ com sum }}
+  | nexp1 - nexp2                         :: :: minus    {{ com subtraction }}
+  | 2 ^ nexp                              :: :: exp      {{ com exponential }}
+  | - nexp                                :: :: neg      {{ com unary negation}}
+  | ( nexp )                              :: S :: paren  {{ ichlo [[nexp]] }}
 
 order :: 'Ord_' ::=
   {{ com vector order specifications, of kind Order }}
@@ -252,10 +267,11 @@ n_constraint :: 'NC_' ::=
   | nexp '<=' nexp'                  :: :: bounded_le
   | nexp '<' nexp'                   :: :: bounded_lt
   | nexp != nexp'                    :: :: not_equal
-  | kid 'IN' { num1 , ... , numn }   :: :: set
+  | nexp 'IN' { num1 , ... , numn }  :: :: set
   | n_constraint & n_constraint'     :: :: or
   | n_constraint | n_constraint'     :: :: and
   | id ( typ_arg0 , ... , typ_argn ) :: :: app
+  | id                               :: :: id
   | kid                              :: :: var
   | true                             :: :: true
   | false                            :: :: false
@@ -304,6 +320,8 @@ type_def_aux  :: 'TD_' ::=
     {{ com tagged union type definition}} {{ texlong }}
   | typedef id = enumerate { id1 ; ... ; idn semi_opt }   :: :: enum
     {{ com enumeration type definition}} {{ texlong }}
+  | typedef id : kind :: :: abstract
+    {{ com abstract type }}
   | bitfield id : typ = { id1 : index_range1 , ... , idn : index_rangen } :: :: bitfield
     {{ com register mutable bitfield type definition }} {{ texlong }}
 
@@ -522,8 +540,8 @@ opt_default :: 'Def_val_' ::=
 pexp :: 'Pat_' ::=
   {{ com pattern match }}
   {{ aux _ annot }} {{ auxparam 'a }}
-  | pat -> exp                          :: :: exp
-  | pat when exp1 -> exp                :: :: when
+  | pat => exp                        :: :: exp
+  | pat if exp1 => exp                :: :: when
 % apparently could use -> or => for this.
 
 %% % psexp :: 'Pats' ::=
@@ -630,8 +648,8 @@ mapcl :: 'MCL_' ::=
   {{ com mapping clause (bidirectional pattern-match) }}
   {{ aux _ clause_annot }} {{ auxparam 'a }}
   | mpexp1 <-> mpexp2 :: :: bidir
-  | mpexp   => exp    :: :: forwards
-  | mpexp  <-  exp    :: :: backwards
+  | forwards pexp     :: :: forwards
+  | backwards pexp    :: :: backwards
 
 
 mapdef :: 'MD_' ::=
@@ -746,6 +764,8 @@ def :: 'DEF_' ::=
   {{ aux _ def_annot }} {{ auxparam 'a }}
   | type_def                                           :: :: type
     {{ com type definition }}
+  | constraint n_constraint                            :: :: constraint
+    {{ com top-level constraint }}
   | fundef                                             :: :: fundef
     {{ com function definition }}
   | mapdef                                             :: :: mapdef

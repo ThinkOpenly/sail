@@ -80,6 +80,9 @@
 (** If this is false, Sail will never generate any warnings *)
 val opt_warnings : bool ref
 
+(** If this is true, we will print all warnings, even if generated with [~once_from]. *)
+val opt_all_warnings : bool ref
+
 (** How many backtrace entries to show for unreachable code errors *)
 val opt_backtrace_length : int ref
 
@@ -93,6 +96,14 @@ val loc_file : Parse_ast.l -> string option
 
 (** Reduce a location to a pair of positions if possible *)
 val simp_loc : Ast.l -> (Lexing.position * Lexing.position) option
+
+(** [loc_range_to_src] returns the source code text of a range **)
+val loc_range_to_src : Lexing.position -> Lexing.position -> string
+
+(** Adjust the range of a location. Note that only the primary
+    location is adjusted. Hint locations are unaffected. *)
+val map_loc_range :
+  (Lexing.position -> Lexing.position -> Lexing.position * Lexing.position) -> Parse_ast.l -> Parse_ast.l
 
 (** [short_loc_to_string] prints the location as a single line in a simple format *)
 val short_loc_to_string : Parse_ast.l -> string
@@ -150,6 +161,9 @@ val forbid_errors : string * int * int * int -> ('a -> 'b) -> 'a -> 'b
 val warn : ?once_from:string * int * int * int -> string -> Parse_ast.l -> string -> unit
 
 val format_warn : ?once_from:string * int * int * int -> string -> Parse_ast.l -> Error_format.message -> unit
+
+(** Print information about suppressed warnings *)
+val suppressed_warning_info : unit -> unit
 
 (** Print a simple one-line warning without a location. *)
 val simple_warn : string -> unit

@@ -118,7 +118,7 @@ module Env : sig
       Useful when processing the body of the function. *)
   val get_val_spec_orig : id -> t -> typquant * typ
 
-  val update_val_spec : id -> typquant * typ -> t -> t
+  val update_val_spec : ?in_module:Project.mod_id -> id -> typquant * typ -> t -> t
 
   val get_register : id -> t -> typ
   val get_registers : t -> typ Bindings.t
@@ -147,7 +147,7 @@ module Env : sig
   (** Get the current set of constraints. *)
   val get_constraints : t -> n_constraint list
 
-  val add_constraint : ?reason:Ast.l * string -> n_constraint -> t -> t
+  val add_constraint : ?global:bool -> ?reason:Ast.l * string -> n_constraint -> t -> t
 
   (** Push all the type variables and constraints from a typquant into
       an environment *)
@@ -442,6 +442,8 @@ val destruct_numeric : ?name:string option -> typ -> (kid list * n_constraint * 
 val destruct_vector : Env.t -> typ -> (nexp * typ) option
 val destruct_bitvector : Env.t -> typ -> nexp option
 
+val destruct_boolean : ?name:string option -> typ -> (kid * n_constraint) option
+
 val vector_start_index : Env.t -> typ -> nexp
 
 (** Construct an existential type with a guaranteed fresh
@@ -507,4 +509,7 @@ val check_with_envs : Env.t -> uannot def list -> (tannot def list * Env.t) list
 (** The initial type checking environment *)
 val initial_env : Env.t
 
-val prove_smt : Env.t -> n_constraint -> bool
+(** The initial type checking environment, with a specific set of available modules. *)
+val initial_env_with_modules : Project.project_structure -> Env.t
+
+val prove_smt : abstract:kind Bindings.t -> assumptions:n_constraint list -> n_constraint -> bool

@@ -75,9 +75,11 @@ module Big_int = Nat_big_num
 module P = Parse_ast
 
 (* See mli file for details on what these flags do *)
-let opt_undefined_gen = ref false
 let opt_fast_undefined = ref false
 let opt_magic_hash = ref false
+let opt_abstract_types = ref false
+
+let abstract_type_error = "Abstract types are currently experimental, use the --abstract-types flag to enable"
 
 module StringSet = Set.Make (String)
 module StringMap = Map.Make (String)
@@ -335,7 +337,7 @@ let rec to_ast_typ ctx atyp =
   | P.ATyp_bidir (typ1, typ2, _) -> Typ_aux (Typ_bidir (to_ast_typ ctx typ1, to_ast_typ ctx typ2), l)
   | P.ATyp_nset nums ->
       let n = Kid_aux (Var "'n", gen_loc l) in
-      Typ_aux (Typ_exist ([mk_kopt ~loc:l K_int n], nc_set n nums, atom_typ (nvar n)), l)
+      Typ_aux (Typ_exist ([mk_kopt ~loc:l K_int n], nc_set (nvar n) nums, atom_typ (nvar n)), l)
   | P.ATyp_tuple typs -> Typ_aux (Typ_tuple (List.map (to_ast_typ ctx) typs), l)
   | P.ATyp_app (P.Id_aux (P.Id "int", il), [n]) ->
       Typ_aux (Typ_app (Id_aux (Id "atom", il), [to_ast_typ_arg ctx n K_int]), l)
@@ -398,6 +400,7 @@ and to_ast_nexp ctx atyp =
   | P.ATyp_minus (t1, t2) -> Nexp_aux (Nexp_minus (to_ast_nexp ctx t1, to_ast_nexp ctx t2), l)
   | P.ATyp_app (id, ts) -> Nexp_aux (Nexp_app (to_ast_id ctx id, List.map (to_ast_nexp ctx) ts), l)
   | P.ATyp_parens atyp -> to_ast_nexp ctx atyp
+  | P.ATyp_if (i, t, e) -> Nexp_aux (Nexp_if (to_ast_constraint ctx i, to_ast_nexp ctx t, to_ast_nexp ctx e), l)
   | _ -> raise (Reporting.err_typ l "Invalid numeric expression in type")
 
 and to_ast_bitfield_index_nexp ctx atyp =
@@ -474,10 +477,11 @@ and to_ast_constraint ctx atyp =
                          )
                       )
             end
+        | P.ATyp_id id -> NC_id (to_ast_id ctx id)
         | P.ATyp_var v -> NC_var (to_ast_var v)
         | P.ATyp_lit (P.L_aux (P.L_true, _)) -> NC_true
         | P.ATyp_lit (P.L_aux (P.L_false, _)) -> NC_false
-        | P.ATyp_in (P.ATyp_aux (P.ATyp_var v, _), P.ATyp_aux (P.ATyp_nset bounds, _)) -> NC_set (to_ast_var v, bounds)
+        | P.ATyp_in (n, P.ATyp_aux (P.ATyp_nset bounds, _)) -> NC_set (to_ast_nexp ctx n, bounds)
         | _ -> raise (Reporting.err_typ l "Invalid constraint")
       in
       NC_aux (aux, l)
@@ -856,16 +860,21 @@ let rec to_ast_range ctx (P.BF_aux (r, l)) =
       l
     )
 
-let rec to_ast_type_union doc attrs ctx = function
+let rec to_ast_type_union doc attrs vis ctx = function
+  | P.Tu_aux (P.Tu_private tu, l) -> begin
+      match vis with
+      | Some _ -> raise (Reporting.err_general l "Union constructor has multiple visibility modifiers")
+      | None -> to_ast_type_union doc attrs (Some (Private l)) ctx tu
+    end
   | P.Tu_aux (P.Tu_doc (doc_comment, tu), l) -> begin
       match doc with
       | Some _ -> raise (Reporting.err_general l "Union constructor has multiple documentation comments")
-      | None -> to_ast_type_union (Some doc_comment) attrs ctx tu
+      | None -> to_ast_type_union (Some doc_comment) attrs vis ctx tu
     end
-  | P.Tu_aux (P.Tu_attribute (attr, arg, tu), l) -> to_ast_type_union doc (attrs @ [(l, attr, arg)]) ctx tu
+  | P.Tu_aux (P.Tu_attribute (attr, arg, tu), l) -> to_ast_type_union doc (attrs @ [(l, attr, arg)]) vis ctx tu
   | P.Tu_aux (P.Tu_ty_id (atyp, id), l) ->
       let typ = to_ast_typ ctx atyp in
-      Tu_aux (Tu_ty_id (typ, to_ast_id ctx id), mk_def_annot ?doc ~attrs l)
+      Tu_aux (Tu_ty_id (typ, to_ast_id ctx id), mk_def_annot ?doc ~attrs ?visibility:vis l)
   | P.Tu_aux (_, l) ->
       raise (Reporting.err_unreachable l __POS__ "Anonymous record type should have been rewritten by now")
 
@@ -888,6 +897,9 @@ let anon_rec_constructor_typ record_id = function
 
 (* Strip attributes and doc comment from a type union *)
 let rec type_union_strip = function
+  | P.Tu_aux (P.Tu_private tu, l) ->
+      let unstrip, tu = type_union_strip tu in
+      ((fun tu -> P.Tu_aux (P.Tu_private (unstrip tu), l)), tu)
   | P.Tu_aux (P.Tu_attribute (attr, arg, tu), l) ->
       let unstrip, tu = type_union_strip tu in
       ((fun tu -> P.Tu_aux (P.Tu_attribute (attr, arg, unstrip tu), l)), tu)
@@ -1036,7 +1048,7 @@ let rec to_ast_typedef ctx def_annot (P.TD_aux (aux, l) : P.type_def) : uannot d
       (* Now generate the AST union type *)
       let id = to_ast_reserved_type_id ctx id in
       let typq, typq_ctx = to_ast_typquant ctx typq in
-      let arms = List.map (to_ast_type_union None [] (add_constructor id typq typq_ctx)) arms in
+      let arms = List.map (to_ast_type_union None [] None (add_constructor id typq typq_ctx)) arms in
       ( [DEF_aux (DEF_type (TD_aux (TD_variant (id, typq, arms, false), (l, empty_uannot))), def_annot)]
         @ generated_records,
         add_constructor id typq ctx
@@ -1048,6 +1060,17 @@ let rec to_ast_typedef ctx def_annot (P.TD_aux (aux, l) : P.type_def) : uannot d
       ( fns @ [DEF_aux (DEF_type (TD_aux (TD_enum (id, enums, false), (l, empty_uannot))), def_annot)],
         { ctx with type_constructors = Bindings.add id [] ctx.type_constructors }
       )
+  | P.TD_abstract (id, kind) ->
+      if not !opt_abstract_types then raise (Reporting.err_general l abstract_type_error);
+      let id = to_ast_reserved_type_id ctx id in
+      begin
+        match to_ast_kind kind with
+        | Some kind ->
+            ( [DEF_aux (DEF_type (TD_aux (TD_abstract (id, kind), (l, empty_uannot))), def_annot)],
+              { ctx with type_constructors = Bindings.add id [] ctx.type_constructors }
+            )
+        | None -> raise (Reporting.err_general l "Abstract type cannot have Order kind")
+      end
   | P.TD_bitfield (id, typ, ranges) ->
       let id = to_ast_reserved_type_id ctx id in
       let typ = to_ast_typ ctx typ in
@@ -1081,6 +1104,7 @@ let to_ast_typschm_opt ctx (P.TypSchm_opt_aux (aux, l)) : tannot_opt ctx_out =
 
 let rec to_ast_funcl doc attrs ctx (P.FCL_aux (fcl, l) : P.funcl) : uannot funcl =
   match fcl with
+  | P.FCL_private fcl -> raise (Reporting.err_general l "private visibility modifier on function clause")
   | P.FCL_attribute (attr, arg, fcl) -> to_ast_funcl doc (attrs @ [(l, attr, arg)]) ctx fcl
   | P.FCL_doc (doc_comment, fcl) -> begin
       match doc with
@@ -1139,6 +1163,11 @@ let to_ast_mpexp ctx (P.MPat_aux (mpexp, l)) =
   | P.MPat_pat mpat -> MPat_aux (MPat_pat (to_ast_mpat ctx mpat), (l, empty_uannot))
   | P.MPat_when (mpat, exp) -> MPat_aux (MPat_when (to_ast_mpat ctx mpat, to_ast_exp ctx exp), (l, empty_uannot))
 
+let pexp_of_mpexp (MPat_aux (aux, annot)) exp =
+  match aux with
+  | MPat_pat mpat -> Pat_aux (Pat_exp (pat_of_mpat mpat, exp), annot)
+  | MPat_when (mpat, guard) -> Pat_aux (Pat_when (pat_of_mpat mpat, guard, exp), annot)
+
 let rec to_ast_mapcl doc attrs ctx (P.MCL_aux (mapcl, l)) =
   match mapcl with
   | P.MCL_attribute (attr, arg, mcl) -> to_ast_mapcl doc (attrs @ [(l, attr, arg)]) ctx mcl
@@ -1149,10 +1178,12 @@ let rec to_ast_mapcl doc attrs ctx (P.MCL_aux (mapcl, l)) =
     end
   | P.MCL_bidir (mpexp1, mpexp2) ->
       MCL_aux (MCL_bidir (to_ast_mpexp ctx mpexp1, to_ast_mpexp ctx mpexp2), (mk_def_annot ?doc ~attrs l, empty_uannot))
-  | P.MCL_forwards (mpexp, exp) ->
-      MCL_aux (MCL_forwards (to_ast_mpexp ctx mpexp, to_ast_exp ctx exp), (mk_def_annot ?doc ~attrs l, empty_uannot))
-  | P.MCL_backwards (mpexp, exp) ->
-      MCL_aux (MCL_backwards (to_ast_mpexp ctx mpexp, to_ast_exp ctx exp), (mk_def_annot ?doc ~attrs l, empty_uannot))
+  | P.MCL_forwards_deprecated (mpexp, exp) ->
+      let mpexp = to_ast_mpexp ctx mpexp in
+      let exp = to_ast_exp ctx exp in
+      MCL_aux (MCL_forwards (pexp_of_mpexp mpexp exp), (mk_def_annot ?doc ~attrs l, empty_uannot))
+  | P.MCL_forwards pexp -> MCL_aux (MCL_forwards (to_ast_case ctx pexp), (mk_def_annot ?doc ~attrs l, empty_uannot))
+  | P.MCL_backwards pexp -> MCL_aux (MCL_backwards (to_ast_case ctx pexp), (mk_def_annot ?doc ~attrs l, empty_uannot))
 
 let to_ast_mapdef ctx (P.MD_aux (md, l) : P.mapdef) : uannot mapdef =
   match md with
@@ -1206,7 +1237,7 @@ let to_ast_scattered ctx (P.SD_aux (aux, l)) =
                     )
                 | None -> (None, scattered_ctx)
               in
-              let tu = to_ast_type_union None [] scattered_ctx tu in
+              let tu = to_ast_type_union None [] None scattered_ctx tu in
               (extra_def, SD_unioncl (id, tu), ctx)
           | None -> raise (Reporting.err_typ l ("No scattered union declaration found for " ^ string_of_id id))
         end
@@ -1248,14 +1279,30 @@ let check_annotation (DEF_aux (aux, def_annot)) =
     | _ -> ()
   )
 
-let rec to_ast_def doc attrs ctx (P.DEF_aux (def, l)) : uannot def list ctx_out =
-  let annot = mk_def_annot ?doc ~attrs l in
+let pragma_arg_loc pragma arg_left_trim l =
+  let open Lexing in
+  Reporting.map_loc_range
+    (fun p1 p2 ->
+      let left_trim = String.length pragma + arg_left_trim + 1 in
+      let p1 = { p1 with pos_cnum = p1.pos_cnum + left_trim } in
+      let p2 = { p2 with pos_cnum = p2.pos_cnum - 1; pos_bol = p1.pos_bol; pos_lnum = p1.pos_lnum } in
+      (p1, p2)
+    )
+    l
+
+let rec to_ast_def doc attrs vis ctx (P.DEF_aux (def, l)) : uannot def list ctx_out =
+  let annot = mk_def_annot ?doc ~attrs ?visibility:vis l in
   match def with
-  | P.DEF_attribute (attr, arg, def) -> to_ast_def doc (attrs @ [(l, attr, arg)]) ctx def
+  | P.DEF_private def -> begin
+      match vis with
+      | Some _ -> raise (Reporting.err_general l "Toplevel definition has multiple visibility modifiers")
+      | None -> to_ast_def doc attrs (Some (Private l)) ctx def
+    end
+  | P.DEF_attribute (attr, arg, def) -> to_ast_def doc (attrs @ [(l, attr, arg)]) vis ctx def
   | P.DEF_doc (doc_comment, def) -> begin
       match doc with
       | Some _ -> raise (Reporting.err_general l "Toplevel definition has multiple documentation comments")
-      | None -> to_ast_def (Some doc_comment) attrs ctx def
+      | None -> to_ast_def (Some doc_comment) attrs vis ctx def
     end
   | P.DEF_overload (id, ids) -> ([DEF_aux (DEF_overload (to_ast_id ctx id, List.map (to_ast_id ctx) ids), annot)], ctx)
   | P.DEF_fixity (prec, n, op) ->
@@ -1285,7 +1332,7 @@ let rec to_ast_def doc attrs ctx (P.DEF_aux (def, l)) : uannot def list ctx_out 
       let defs, _ =
         List.fold_left
           (fun (defs, ctx) def ->
-            let def, ctx = to_ast_def doc attrs ctx def in
+            let def, ctx = to_ast_def None [] None ctx def in
             (def @ defs, ctx)
           )
           ([], inner_ctx) defs
@@ -1305,25 +1352,34 @@ let rec to_ast_def doc attrs ctx (P.DEF_aux (def, l)) : uannot def list ctx_out 
   | P.DEF_register dec ->
       let d = to_ast_dec ctx dec in
       ([DEF_aux (DEF_register d, annot)], ctx)
-  | P.DEF_pragma ("sail_internal", arg) -> begin
-      match Reporting.loc_file l with
-      | Some file ->
-          ( [DEF_aux (DEF_pragma ("sail_internal", arg, l), annot)],
-            { ctx with internal_files = StringSet.add file ctx.internal_files }
-          )
-      | None -> ([DEF_aux (DEF_pragma ("sail_internal", arg, l), annot)], ctx)
-    end
-  | P.DEF_pragma ("target_set", arg) ->
-      let args = String.split_on_char ' ' arg |> List.filter (fun s -> String.length s > 0) in
+  | P.DEF_constraint nc ->
+      if not !opt_abstract_types then raise (Reporting.err_general l abstract_type_error);
+      let nc = to_ast_constraint ctx nc in
+      ([DEF_aux (DEF_constraint nc, annot)], ctx)
+  | P.DEF_pragma (pragma, arg, ltrim) ->
+      let l = pragma_arg_loc pragma ltrim l in
       begin
-        match args with
-        | set :: targets ->
-            ( [DEF_aux (DEF_pragma ("target_set", arg, l), annot)],
-              { ctx with target_sets = StringMap.add set targets ctx.target_sets }
-            )
-        | [] -> raise (Reporting.err_general l "No arguments provided to target set directive")
+        match pragma with
+        | "sail_internal" -> begin
+            match Reporting.loc_file l with
+            | Some file ->
+                ( [DEF_aux (DEF_pragma ("sail_internal", arg, l), annot)],
+                  { ctx with internal_files = StringSet.add file ctx.internal_files }
+                )
+            | None -> ([DEF_aux (DEF_pragma ("sail_internal", arg, l), annot)], ctx)
+          end
+        | "target_set" ->
+            let args = String.split_on_char ' ' arg |> List.filter (fun s -> String.length s > 0) in
+            begin
+              match args with
+              | set :: targets ->
+                  ( [DEF_aux (DEF_pragma ("target_set", arg, l), annot)],
+                    { ctx with target_sets = StringMap.add set targets ctx.target_sets }
+                  )
+              | [] -> raise (Reporting.err_general l "No arguments provided to target set directive")
+            end
+        | _ -> ([DEF_aux (DEF_pragma (pragma, arg, l), annot)], ctx)
       end
-  | P.DEF_pragma (pragma, arg) -> ([DEF_aux (DEF_pragma (pragma, arg, l), annot)], ctx)
   | P.DEF_internal_mutrec _ ->
       (* Should never occur because of remove_mutrec *)
       raise (Reporting.err_unreachable l __POS__ "Internal mutual block found when processing scattered defs")
@@ -1347,7 +1403,7 @@ let to_ast ctx (P.Defs files) =
     let defs, ctx =
       List.fold_left
         (fun (defs, ctx) def ->
-          let new_defs, ctx = to_ast_def None [] ctx def in
+          let new_defs, ctx = to_ast_def None [] None ctx def in
           List.iter check_annotation new_defs;
           (new_defs @ defs, ctx)
         )
@@ -1381,6 +1437,7 @@ let initial_ctx =
           ("unit", []);
           ("bit", []);
           ("string", []);
+          ("string_literal", []);
           ("real", []);
           ("list", [Some K_type]);
           ("register", [Some K_type]);
@@ -1391,6 +1448,7 @@ let initial_ctx =
           ("implicit", [Some K_int]);
           ("itself", [Some K_int]);
           ("not", [Some K_bool]);
+          ("ite", [Some K_bool; Some K_int; Some K_int]);
         ];
     kinds = KBindings.empty;
     scattereds = Bindings.empty;
@@ -1413,27 +1471,27 @@ let initial_ctx =
 
 let exp_of_string str =
   try
-    let exp = Parser.exp_eof Lexer.token (Lexing.from_string str) in
+    let exp = Parser.exp_eof (Lexer.token (ref [])) (Lexing.from_string str) in
     to_ast_exp initial_ctx exp
   with Parser.Error -> Reporting.unreachable Parse_ast.Unknown __POS__ ("Failed to parse " ^ str)
 
 let typschm_of_string str =
   try
-    let typschm = Parser.typschm_eof Lexer.token (Lexing.from_string str) in
+    let typschm = Parser.typschm_eof (Lexer.token (ref [])) (Lexing.from_string str) in
     let typschm, _ = to_ast_typschm initial_ctx typschm in
     typschm
   with Parser.Error -> Reporting.unreachable Parse_ast.Unknown __POS__ ("Failed to parse " ^ str)
 
 let typ_of_string str =
   try
-    let typ = Parser.typ_eof Lexer.token (Lexing.from_string str) in
+    let typ = Parser.typ_eof (Lexer.token (ref [])) (Lexing.from_string str) in
     let typ = to_ast_typ initial_ctx typ in
     typ
   with Parser.Error -> Reporting.unreachable Parse_ast.Unknown __POS__ ("Failed to parse " ^ str)
 
 let constraint_of_string str =
   try
-    let atyp = Parser.typ_eof Lexer.token (Lexing.from_string str) in
+    let atyp = Parser.typ_eof (Lexer.token (ref [])) (Lexing.from_string str) in
     to_ast_constraint initial_ctx atyp
   with Parser.Error -> Reporting.unreachable Parse_ast.Unknown __POS__ ("Failed to parse " ^ str)
 
@@ -1442,18 +1500,22 @@ let extern_of_string ?(pure = false) id str =
 
 let val_spec_of_string id str = mk_val_spec (VS_val_spec (typschm_of_string str, id, None))
 
-let quant_item_param = function
-  | QI_aux (QI_id kopt, _) when is_int_kopt kopt -> [prepend_id "atom_" (id_of_kid (kopt_kid kopt))]
-  | QI_aux (QI_id kopt, _) when is_typ_kopt kopt -> [prepend_id "typ_" (id_of_kid (kopt_kid kopt))]
+let quant_item_param_typ = function
+  | QI_aux (QI_id kopt, _) when is_int_kopt kopt ->
+      [(prepend_id "atom_" (id_of_kid (kopt_kid kopt)), atom_typ (nvar (kopt_kid kopt)))]
+  | QI_aux (QI_id kopt, _) when is_typ_kopt kopt ->
+      [(prepend_id "typ_" (id_of_kid (kopt_kid kopt)), mk_typ (Typ_var (kopt_kid kopt)))]
   | _ -> []
-let quant_item_typ = function
-  | QI_aux (QI_id kopt, _) when is_int_kopt kopt -> [atom_typ (nvar (kopt_kid kopt))]
-  | QI_aux (QI_id kopt, _) when is_typ_kopt kopt -> [mk_typ (Typ_var (kopt_kid kopt))]
-  | _ -> []
+
+let quant_item_param qi = List.map fst (quant_item_param_typ qi)
+
+let quant_item_typ qi = List.map snd (quant_item_param_typ qi)
+
 let quant_item_arg = function
   | QI_aux (QI_id kopt, _) when is_int_kopt kopt -> [mk_typ_arg (A_nexp (nvar (kopt_kid kopt)))]
   | QI_aux (QI_id kopt, _) when is_typ_kopt kopt -> [mk_typ_arg (A_typ (mk_typ (Typ_var (kopt_kid kopt))))]
   | _ -> []
+
 let undefined_typschm id typq =
   let qis = quant_items typq in
   if qis = [] then mk_typschm typq (function_typ [unit_typ] (mk_typ (Typ_id id)))
@@ -1462,6 +1524,37 @@ let undefined_typschm id typq =
     let ret_typ = app_typ id (List.concat (List.map quant_item_arg qis)) in
     mk_typschm typq (function_typ arg_typs ret_typ)
   )
+
+let generate_undefined_record_context typq =
+  quant_items typq |> List.map (fun qi -> quant_item_param_typ qi) |> List.concat
+
+let generate_undefined_record id typq fields =
+  let p_tup = function [pat] -> pat | pats -> mk_pat (P_tuple pats) in
+  let pat =
+    p_tup (quant_items typq |> List.map quant_item_param |> List.concat |> List.map (fun id -> mk_pat (P_id id)))
+  in
+  [
+    mk_val_spec (VS_val_spec (undefined_typschm id typq, prepend_id "undefined_" id, None));
+    mk_fundef
+      [
+        mk_funcl (prepend_id "undefined_" id) pat
+          (mk_exp (E_struct (List.map (fun (_, id) -> mk_fexp id (mk_lit_exp L_undef)) fields)));
+      ];
+  ]
+
+let generate_undefined_enum id ids =
+  let typschm = typschm_of_string ("unit -> " ^ string_of_id id) in
+  [
+    mk_val_spec (VS_val_spec (typschm, prepend_id "undefined_" id, None));
+    mk_fundef
+      [
+        mk_funcl (prepend_id "undefined_" id)
+          (mk_pat (P_lit (mk_lit L_unit)))
+          ( if !opt_fast_undefined && List.length ids > 0 then mk_exp (E_id (List.hd ids))
+            else mk_exp (E_app (mk_id "internal_pick", [mk_exp (E_list (List.map (fun id -> mk_exp (E_id id)) ids))]))
+          );
+      ];
+  ]
 
 let have_undefined_builtins = ref false
 
@@ -1482,6 +1575,9 @@ let undefined_builtin_val_specs =
     extern_of_string (mk_id "undefined_unit") "unit -> unit";
   ]
 
+let make_global (DEF_aux (def, def_annot)) =
+  DEF_aux (def, add_def_attribute (gen_loc def_annot.loc) "global" "" def_annot)
+
 let generate_undefineds vs_ids defs =
   let undefined_builtins =
     if !have_undefined_builtins then []
@@ -1490,134 +1586,14 @@ let generate_undefineds vs_ids defs =
       List.filter (fun def -> IdSet.is_empty (IdSet.inter vs_ids (ids_of_def def))) undefined_builtin_val_specs
     end
   in
-  let undefined_tu = function
-    | Tu_aux (Tu_ty_id (Typ_aux (Typ_tuple typs, _), id), _) ->
-        mk_exp (E_app (id, List.map (fun typ -> mk_exp (E_typ (typ, mk_lit_exp L_undef))) typs))
-    | Tu_aux (Tu_ty_id (typ, id), _) -> mk_exp (E_app (id, [mk_exp (E_typ (typ, mk_lit_exp L_undef))]))
-  in
-  let p_tup = function [pat] -> pat | pats -> mk_pat (P_tuple pats) in
-  let undefined_union id typq tus =
-    let pat =
-      p_tup (quant_items typq |> List.map quant_item_param |> List.concat |> List.map (fun id -> mk_pat (P_id id)))
-    in
-    let body =
-      if !opt_fast_undefined && List.length tus > 0 then undefined_tu (List.hd tus)
-      else (
-        (* Deduplicate arguments for each constructor to keep definitions
-           manageable. *)
-        let extract_tu = function
-          | Tu_aux (Tu_ty_id (Typ_aux (Typ_tuple typs, _), id), _) -> (id, typs)
-          | Tu_aux (Tu_ty_id (typ, id), _) -> (id, [typ])
-        in
-        let record_arg_typs m (_, typs) =
-          let m' =
-            List.fold_left
-              (fun m typ -> TypMap.add typ (1 + try TypMap.find typ m with Not_found -> 0) m)
-              TypMap.empty typs
-          in
-          TypMap.merge
-            (fun _ x y -> match (x, y) with Some m, Some n -> Some (max m n) | None, x -> x | x, None -> x)
-            m m'
-        in
-        let make_undef_var typ n (i, lbs, m) =
-          let j = i + n in
-          let rec aux k =
-            if k = j then []
-            else (
-              let v = mk_id ("u_" ^ string_of_int k) in
-              mk_letbind (mk_pat (P_typ (typ, mk_pat (P_id v)))) (mk_lit_exp L_undef) :: aux (k + 1)
-            )
-          in
-          (j, aux i @ lbs, TypMap.add typ i m)
-        in
-        let make_constr m (id, typs) =
-          let args, _ =
-            List.fold_right
-              (fun typ (acc, m) ->
-                let i = TypMap.find typ m in
-                (mk_exp (E_id (mk_id ("u_" ^ string_of_int i))) :: acc, TypMap.add typ (i + 1) m)
-              )
-              typs ([], m)
-          in
-          mk_exp (E_app (id, args))
-        in
-        let constr_args = List.map extract_tu tus in
-        let typs_needed = List.fold_left record_arg_typs TypMap.empty constr_args in
-        let _, letbinds, typ_to_var = TypMap.fold make_undef_var typs_needed (0, [], TypMap.empty) in
-        List.fold_left
-          (fun e lb -> mk_exp (E_let (lb, e)))
-          (mk_exp (E_app (mk_id "internal_pick", [mk_exp (E_list (List.map (make_constr typ_to_var) constr_args))])))
-          letbinds
-      )
-    in
-    ( mk_val_spec (VS_val_spec (undefined_typschm id typq, prepend_id "undefined_" id, None)),
-      mk_fundef [mk_funcl (prepend_id "undefined_" id) pat body]
-    )
-  in
-  let undefined_td = function
-    | TD_enum (id, ids, _) when not (IdSet.mem (prepend_id "undefined_" id) vs_ids) ->
-        let typschm = typschm_of_string ("unit -> " ^ string_of_id id) in
-        [
-          mk_val_spec (VS_val_spec (typschm, prepend_id "undefined_" id, None));
-          mk_fundef
-            [
-              mk_funcl (prepend_id "undefined_" id)
-                (mk_pat (P_lit (mk_lit L_unit)))
-                ( if !opt_fast_undefined && List.length ids > 0 then mk_exp (E_id (List.hd ids))
-                  else
-                    mk_exp (E_app (mk_id "internal_pick", [mk_exp (E_list (List.map (fun id -> mk_exp (E_id id)) ids))]))
-                );
-            ];
-        ]
-    | TD_record (id, typq, fields, _) when not (IdSet.mem (prepend_id "undefined_" id) vs_ids) ->
-        let pat =
-          p_tup (quant_items typq |> List.map quant_item_param |> List.concat |> List.map (fun id -> mk_pat (P_id id)))
-        in
-        [
-          mk_val_spec (VS_val_spec (undefined_typschm id typq, prepend_id "undefined_" id, None));
-          mk_fundef
-            [
-              mk_funcl (prepend_id "undefined_" id) pat
-                (mk_exp (E_struct (List.map (fun (_, id) -> mk_fexp id (mk_lit_exp L_undef)) fields)));
-            ];
-        ]
-    | TD_variant (id, typq, tus, _) when not (IdSet.mem (prepend_id "undefined_" id) vs_ids) ->
-        let vs, def = undefined_union id typq tus in
-        [vs; def]
-    | _ -> []
-  in
-  let undefined_scattered id typq =
-    let tus = get_scattered_union_clauses id defs in
-    undefined_union id typq tus
-  in
-  let rec undefined_defs = function
-    | (DEF_aux (DEF_type (TD_aux (td_aux, _)), _) as def) :: defs -> (def :: undefined_td td_aux) @ undefined_defs defs
-    (* The function definition must come after the scattered type definition is complete, so put it at the end. *)
-    | (DEF_aux (DEF_scattered (SD_aux (SD_variant (id, typq), _)), _) as def) :: defs ->
-        let vs, fn = undefined_scattered id typq in
-        (def :: vs :: undefined_defs defs) @ [fn]
-    | (DEF_aux (DEF_scattered (SD_aux (SD_internal_unioncl_record (_, id, typq, fields), _)), _) as def) :: defs
-      when not (IdSet.mem (prepend_id "undefined_" id) vs_ids) ->
-        let pat =
-          p_tup (quant_items typq |> List.map quant_item_param |> List.concat |> List.map (fun id -> mk_pat (P_id id)))
-        in
-        let vs = mk_val_spec (VS_val_spec (undefined_typschm id typq, prepend_id "undefined_" id, None)) in
-        let fn =
-          mk_fundef
-            [
-              mk_funcl (prepend_id "undefined_" id) pat
-                (mk_exp (E_struct (List.map (fun (_, id) -> mk_fexp id (mk_lit_exp L_undef)) fields)));
-            ]
-        in
-        def :: vs :: fn :: undefined_defs defs
-    | def :: defs -> def :: undefined_defs defs
-    | [] -> []
-  in
-  undefined_builtins @ undefined_defs defs
+  undefined_builtins @ defs
 
 let rec get_uninitialized_registers = function
-  | DEF_aux (DEF_register (DEC_aux (DEC_reg (typ, id, None), _)), _) :: defs ->
-      (typ, id) :: get_uninitialized_registers defs
+  | DEF_aux (DEF_register (DEC_aux (DEC_reg (typ, id, None), _)), _) :: defs -> begin
+      match typ with
+      | Typ_aux (Typ_app (Id_aux (Id "option", _), [_]), _) -> get_uninitialized_registers defs
+      | _ -> (typ, id) :: get_uninitialized_registers defs
+    end
   | _ :: defs -> get_uninitialized_registers defs
   | [] -> []
 
@@ -1644,7 +1620,7 @@ let generate_initialize_registers vs_ids defs =
           ];
       ]
   in
-  defs @ initialize_registers
+  defs @ List.map make_global initialize_registers
 
 let generate_enum_functions vs_ids defs =
   let rec gen_enums acc = function
@@ -1711,8 +1687,7 @@ let process_ast ?(generate = true) ast =
   let ast, ctx = to_ast !incremental_ctx ast in
   incremental_ctx := ctx;
   let vs_ids = val_spec_ids ast.defs in
-  if (not !opt_undefined_gen) && generate then { ast with defs = generate_enum_functions vs_ids ast.defs }
-  else if generate then
+  if generate then
     {
       ast with
       defs =
@@ -1725,7 +1700,7 @@ let ast_of_def_string_with ocaml_pos f str =
   let internal = !opt_magic_hash in
   opt_magic_hash := true;
   lexbuf.lex_curr_p <- { pos_fname = ""; pos_lnum = 1; pos_bol = 0; pos_cnum = 0 };
-  let def = Parser.def_eof Lexer.token lexbuf in
+  let def = Parser.def_eof (Lexer.token (ref [])) lexbuf in
   let ast = Reporting.forbid_errors ocaml_pos (fun ast -> process_ast ~generate:false ast) (P.Defs [("", f [def])]) in
   opt_magic_hash := internal;
   ast
@@ -1745,10 +1720,10 @@ let parse_file ?loc:(l = Parse_ast.Unknown) (f : string) : Lexer.comment list * 
     let lexbuf, in_chan = get_lexbuf f in
     begin
       try
-        Lexer.comments := [];
-        let defs = Parser.file Lexer.token lexbuf in
+        let comments = ref [] in
+        let defs = Parser.file (Lexer.token comments) lexbuf in
         close_in in_chan;
-        (!Lexer.comments, defs)
+        (!comments, defs)
       with Parser.Error ->
         let pos = Lexing.lexeme_start_p lexbuf in
         let tok = Lexing.lexeme lexbuf in
@@ -1764,10 +1739,30 @@ let get_lexbuf_from_string f s =
 let parse_file_from_string ~filename:f ~contents:s =
   let lexbuf = get_lexbuf_from_string f s in
   try
-    Lexer.comments := [];
-    let defs = Parser.file Lexer.token lexbuf in
-    (!Lexer.comments, defs)
+    let comments = ref [] in
+    let defs = Parser.file (Lexer.token comments) lexbuf in
+    (!comments, defs)
   with Parser.Error ->
+    let pos = Lexing.lexeme_start_p lexbuf in
+    let tok = Lexing.lexeme lexbuf in
+    raise (Reporting.err_syntax pos ("current token: " ^ tok))
+
+let parse_project ?inline ?filename:f ~contents:s () =
+  let open Project in
+  let open Lexing in
+  let lexbuf = from_string s in
+
+  (* Note that OCaml >= 4.11 has a much less hacky way of doing this *)
+  begin
+    match inline with
+    | Some p ->
+        lexbuf.lex_curr_p <- p;
+        lexbuf.lex_abs_pos <- p.pos_cnum
+    | None -> lexbuf.lex_curr_p <- { pos_fname = Option.get f; pos_lnum = 1; pos_bol = 0; pos_cnum = 0 }
+  end;
+
+  try Project_parser.file Project_lexer.token lexbuf
+  with Project_parser.Error ->
     let pos = Lexing.lexeme_start_p lexbuf in
     let tok = Lexing.lexeme lexbuf in
     raise (Reporting.err_syntax pos ("current token: " ^ tok))

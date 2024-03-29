@@ -95,18 +95,22 @@ let adding = Util.("Adding " |> darkgray |> clear)
 
 type constraint_reason = (Ast.l * string) option
 
+type type_variables = { vars : (Ast.l * kind_aux) KBindings.t; shadows : int KBindings.t }
+
 type type_error =
   (* First parameter is the error that caused us to start doing type
      coercions, the second is the errors encountered by all possible
      coercions *)
   | Err_no_casts of uannot exp * typ * typ * type_error * type_error list
   | Err_no_overloading of id * (id * type_error) list
-  | Err_unresolved_quants of id * quant_item list * (mut * typ) Bindings.t * n_constraint list
-  | Err_failed_constraint of n_constraint * (mut * typ) Bindings.t * n_constraint list
-  | Err_subtype of typ * typ * n_constraint option * (constraint_reason * n_constraint) list * Ast.l KBindings.t
+  | Err_unresolved_quants of id * quant_item list * (mut * typ) Bindings.t * type_variables * n_constraint list
+  | Err_failed_constraint of n_constraint * (mut * typ) Bindings.t * type_variables * n_constraint list
+  | Err_subtype of typ * typ * n_constraint option * (constraint_reason * n_constraint) list * type_variables
   | Err_no_num_ident of id
   | Err_other of string
   | Err_inner of type_error * Parse_ast.l * string * string option * type_error
+  | Err_not_in_scope of
+      string option * Parse_ast.l option * string Project.spanned option * string Project.spanned option * bool
 
 let err_because (error1, l, error2) = Err_inner (error1, l, "Caused by", None, error2)
 
@@ -136,17 +140,19 @@ and unloc_nexp_aux = function
   | Nexp_minus (nexp1, nexp2) -> Nexp_minus (unloc_nexp nexp1, unloc_nexp nexp2)
   | Nexp_exp nexp -> Nexp_exp (unloc_nexp nexp)
   | Nexp_neg nexp -> Nexp_neg (unloc_nexp nexp)
+  | Nexp_if (i, t, e) -> Nexp_if (unloc_n_constraint i, unloc_nexp t, unloc_nexp e)
 
 and unloc_nexp = function Nexp_aux (nexp_aux, _) -> Nexp_aux (unloc_nexp_aux nexp_aux, Parse_ast.Unknown)
 
 and unloc_n_constraint_aux = function
+  | NC_id id -> NC_id (unloc_id id)
   | NC_equal (nexp1, nexp2) -> NC_equal (unloc_nexp nexp1, unloc_nexp nexp2)
   | NC_bounded_ge (nexp1, nexp2) -> NC_bounded_ge (unloc_nexp nexp1, unloc_nexp nexp2)
   | NC_bounded_gt (nexp1, nexp2) -> NC_bounded_gt (unloc_nexp nexp1, unloc_nexp nexp2)
   | NC_bounded_le (nexp1, nexp2) -> NC_bounded_le (unloc_nexp nexp1, unloc_nexp nexp2)
   | NC_bounded_lt (nexp1, nexp2) -> NC_bounded_lt (unloc_nexp nexp1, unloc_nexp nexp2)
   | NC_not_equal (nexp1, nexp2) -> NC_not_equal (unloc_nexp nexp1, unloc_nexp nexp2)
-  | NC_set (kid, nums) -> NC_set (unloc_kid kid, nums)
+  | NC_set (nexp, nums) -> NC_set (unloc_nexp nexp, nums)
   | NC_or (nc1, nc2) -> NC_or (unloc_n_constraint nc1, unloc_n_constraint nc2)
   | NC_and (nc1, nc2) -> NC_and (unloc_n_constraint nc1, unloc_n_constraint nc2)
   | NC_var kid -> NC_var (unloc_kid kid)
@@ -218,7 +224,8 @@ and constraint_nexps (NC_aux (nc_aux, _)) =
   | NC_bounded_lt (n1, n2)
   | NC_not_equal (n1, n2) ->
       [n1; n2]
-  | NC_set _ | NC_true | NC_false | NC_var _ -> []
+  | NC_id _ | NC_true | NC_false | NC_var _ -> []
+  | NC_set (n, _) -> [n]
   | NC_or (nc1, nc2) | NC_and (nc1, nc2) -> constraint_nexps nc1 @ constraint_nexps nc2
   | NC_app (_, args) -> List.concat (List.map typ_arg_nexps args)
 
@@ -232,8 +239,10 @@ let rec nexp_power_variables (Nexp_aux (aux, _)) =
   | Nexp_id _ | Nexp_var _ | Nexp_constant _ -> KidSet.empty
   | Nexp_app (_, ns) -> List.fold_left KidSet.union KidSet.empty (List.map nexp_power_variables ns)
   | Nexp_exp n -> tyvars_of_nexp n
+  | Nexp_if (i, t, e) ->
+      KidSet.union (constraint_power_variables i) (KidSet.union (nexp_power_variables t) (nexp_power_variables e))
 
-let constraint_power_variables nc =
+and constraint_power_variables nc =
   List.fold_left KidSet.union KidSet.empty (List.map nexp_power_variables (constraint_nexps nc))
 
 let ex_counter = ref 0

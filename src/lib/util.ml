@@ -159,7 +159,8 @@ let lex_ord_list comparison xs ys =
     | [], [] -> 0
     | _, _ -> assert false
   in
-  if List.length xs = List.length ys then lex_lists xs ys else if List.length xs < List.length ys then -1 else 1
+  let c = List.compare_lengths xs ys in
+  if c = 0 then lex_lists xs ys else c
 
 let rec power i tothe = if tothe <= 0 then 1 else i * power i (tothe - 1)
 
@@ -177,6 +178,10 @@ let rec compare_list f l1 l2 =
   | x :: l1, y :: l2 ->
       let c = f x y in
       if c = 0 then compare_list f l1 l2 else c
+
+let update_first f = function [] -> [] | x :: xs -> f x :: xs
+
+let rec update_last f = function [] -> [] | [x] -> [f x] | x :: xs -> x :: update_last f xs
 
 let rec map_last f = function [] -> [] | [x] -> [f true x] | x :: xs -> f false x :: map_last f xs
 
@@ -306,10 +311,10 @@ let string_to_list s =
   let rec aux i acc = if i < 0 then acc else aux (i - 1) (s.[i] :: acc) in
   aux (String.length s - 1) []
 
-module IntSet = Set.Make (struct
-  let compare = Stdlib.compare
-  type t = int
-end)
+module IntSet = Set.Make (Int)
+module IntMap = Map.Make (Int)
+
+module StringMap = Map.Make (String)
 
 module IntIntSet = Set.Make (struct
   let compare = Stdlib.compare
@@ -358,6 +363,13 @@ let same_content_files file1 file2 : bool =
        close_in s2;
        result
      end
+
+let read_whole_file filename =
+  (* open_in_bin works correctly on Unix and Windows *)
+  let ch = open_in_bin filename in
+  let s = really_input_string ch (in_channel_length ch) in
+  close_in ch;
+  s
 
 (*String formatting *)
 let rec string_of_list sep string_of = function
@@ -420,6 +432,15 @@ let fold_left_index_last f init xs =
   let rec go n acc = function [] -> acc | [x] -> f n true acc x | x :: xs -> go (n + 1) (f n false acc x) xs in
   go 0 init xs
 
+let map_if pred f xs =
+  let rec go acc = function
+    | x :: xs -> begin match pred x with true -> go (f x :: acc) xs | false -> go (x :: acc) xs end
+    | [] -> List.rev acc
+  in
+  go [] xs
+
+let rec map_exists pred f = function x :: xs -> if pred (f x) then true else map_exists pred f xs | [] -> false
+
 let rec take n xs = match (n, xs) with 0, _ -> [] | _, [] -> [] | n, x :: xs -> x :: take (n - 1) xs
 
 let rec drop n xs = match (n, xs) with 0, xs -> xs | _, [] -> [] | n, _ :: xs -> drop (n - 1) xs
@@ -427,6 +448,27 @@ let rec drop n xs = match (n, xs) with 0, xs -> xs | _, [] -> [] | n, _ :: xs ->
 let list_init len f =
   let rec list_init' len f acc = if acc >= len then [] else f acc :: list_init' len f (acc + 1) in
   list_init' len f 0
+
+let levenshtein_distance ?(osa = false) str1 str2 =
+  let dist = Array.make_matrix (String.length str1 + 1) (String.length str2 + 1) 0 in
+
+  for i = 1 to String.length str1 do
+    dist.(i).(0) <- i
+  done;
+  for j = 1 to String.length str2 do
+    dist.(0).(j) <- j
+  done;
+
+  for i = 1 to String.length str1 do
+    for j = 1 to String.length str2 do
+      let subst_cost = if str1.[i - 1] = str2.[j - 1] then 0 else 1 in
+      dist.(i).(j) <- min (min (dist.(i - 1).(j) + 1) (dist.(i).(j - 1) + 1)) (dist.(i - 1).(j - 1) + subst_cost);
+      if osa && i > 1 && j > 1 && str1.[i - 1] = str2.[j - 2] && str1.[i - 2] = str2.[j - 1] then
+        dist.(i).(j) <- min dist.(i).(j) (dist.(i - 2).(j - 2) + 1)
+    done
+  done;
+
+  dist.(String.length str1).(String.length str2)
 
 let termcode n = if !opt_colors then "\x1B[" ^ string_of_int n ^ "m" else ""
 

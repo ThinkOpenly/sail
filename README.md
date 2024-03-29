@@ -1,3 +1,5 @@
+![Sail logo](https://github.com/rems-project/sail/blob/sail2/etc/logo/sail_logo.png?raw=true)
+
 The Sail ISA specification language
 ===================================
 
@@ -36,7 +38,7 @@ descriptions of the current state.
 This repository contains the implementation of Sail, together with
 some Sail specifications and related tools.
 
-* A manual, [manual.pdf](manual.pdf) with source (in [doc/](doc/))
+* A manual, [doc/manual.html](doc/manual.html) with source (in [doc/](doc/)), currently [available online here](https://alasdair.github.io/manual.html)
 
 * The Sail source code (in [src/](src/))
 
@@ -121,6 +123,11 @@ Vim
 [editors/vim](editors/vim) contains support for syntax highlighting in the vim
 editor, in vim's usual format of an `ftdetect` directory to detect Sail files
 and a `syntax` directory to provide the actual syntax highlighting.
+
+Logo
+====
+
+[etc/logo](etc/logo) contains the Sail logo
 
 Licensing
 =========

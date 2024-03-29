@@ -97,8 +97,6 @@ let prepend_id str1 = function
 let mk_id i n m = Id_aux (i, loc n m)
 let mk_kid str n m = Kid_aux (Var str, loc n m)
 
-let mk_kopt k n m = KOpt_aux (k, loc n m)
-
 let id_of_kid = function
   | Kid_aux (Var v, l) -> Id_aux (Id (String.sub v 1 (String.length v - 1)), l)
 
@@ -122,7 +120,6 @@ let rec same_pat_ops (Id_aux (_, l) as op) = function
                                 (string_of_id op')))
   | [] -> ()
 
-let mk_effect e n m = BE_aux (e, loc n m)
 let mk_typ t n m = ATyp_aux (t, loc n m)
 let mk_pat p n m = P_aux (p, loc n m)
 let mk_fpat fp n m = FP_aux (fp, loc n m)
@@ -157,8 +154,9 @@ let mk_subst ev n m = IS_aux (ev, loc n m)
 let mk_mpexp mpexp n m = MPat_aux (mpexp, loc n m)
 let mk_mpat mpat n m = MP_aux (mpat, loc n m)
 let mk_bidir_mapcl mpexp1 mpexp2 n m = MCL_aux (MCL_bidir (mpexp1, mpexp2), loc n m)
-let mk_forwards_mapcl mpexp exp n m = MCL_aux (MCL_forwards (mpexp, exp), loc n m)
-let mk_backwards_mapcl mpexp exp n m = MCL_aux (MCL_backwards (mpexp, exp), loc n m)
+let mk_forwards_mapcl_deprecated mpexp exp n m = MCL_aux (MCL_forwards_deprecated (mpexp, exp), loc n m)
+let mk_forwards_mapcl pexp n m = MCL_aux (MCL_forwards pexp, loc n m)
+let mk_backwards_mapcl pexp n m = MCL_aux (MCL_backwards pexp, loc n m)
 let mk_map id tannot mapcls n m = MD_aux (MD_mapping (id, tannot, mapcls), loc n m)
 
 let qi_id_of_kopt (KOpt_aux (_, l) as kopt) = QI_aux (QI_id kopt, l)
@@ -173,42 +171,6 @@ let mk_tannot typq typ n m = Typ_annot_opt_aux (Typ_annot_opt_some (typq, typ), 
 let mk_eannotn = Effect_opt_aux (Effect_opt_none,Unknown)
 
 let mk_typq kopts nc n m = TypQ_aux (TypQ_tq (List.map qi_id_of_kopt kopts @ nc), loc n m)
-
-type lchain =
-  LC_lt
-| LC_lteq
-| LC_nexp of atyp
-
-let tyop op t1 t2 s e = mk_typ (ATyp_app (Id_aux (Operator op, loc s e), [t1; t2])) s e
-
-let rec desugar_lchain chain s e =
-  match chain with
-  | [LC_nexp n1; LC_lteq; LC_nexp n2] -> tyop "<=" n1 n2 s e
-  | [LC_nexp n1; LC_lt; LC_nexp n2] -> tyop "<" n1 n2 s e
-  | (LC_nexp n1 :: LC_lteq :: LC_nexp n2 :: chain) ->
-     let nc1 = tyop "<=" n1 n2 s e in
-     tyop "&" nc1 (desugar_lchain (LC_nexp n2 :: chain) s e) s e
-  | (LC_nexp n1 :: LC_lt :: LC_nexp n2 :: chain) ->
-     let nc1 = tyop "<" n1 n2 s e in
-     tyop "&" nc1 (desugar_lchain (LC_nexp n2 :: chain) s e) s e
-  | _ -> assert false
-
-type rchain =
-  RC_gt
-| RC_gteq
-| RC_nexp of atyp
-
-let rec desugar_rchain chain s e =
-  match chain with
-  | [RC_nexp n1; RC_gteq; RC_nexp n2] -> tyop ">=" n1 n2 s e
-  | [RC_nexp n1; RC_gt; RC_nexp n2] -> tyop ">" n1 n2 s e
-  | (RC_nexp n1 :: RC_gteq :: RC_nexp n2 :: chain) ->
-     let nc1 = tyop ">=" n1 n2 s e in
-     tyop "&" nc1 (desugar_rchain (RC_nexp n2 :: chain) s e) s e
-  | (RC_nexp n1 :: RC_gt :: RC_nexp n2 :: chain) ->
-     let nc1 = tyop ">" n1 n2 s e in
-     tyop "&" nc1 (desugar_rchain (RC_nexp n2 :: chain) s e) s e
-  | _ -> assert false
 
 type vector_update =
   VU_single of exp * exp
@@ -234,14 +196,36 @@ let fix_extern typschm = function
 let funcl_annot fs fcl =
   List.fold_right (fun f fcl -> f fcl) fs fcl
 
+let pragma_left_spaces pragma p s =
+  let n = ref 0 in
+  while !n < String.length s && (s.[!n] = ' ' || s.[!n] = '\t') do
+    if s.[!n] = '\t' then (
+      (* If find a tab we won't be able to correctly format errors
+         found in the directive argument. It would be very weird for a
+         tab to show up here, so just bail. *)
+      let p = { p with Lexing.pos_cnum = p.Lexing.pos_cnum + String.length pragma + 1 + !n } in
+      raise (Reporting.err_lex p "Tab character (\\t) found between directive and argument. Please use spaces.")
+    );
+    incr n
+  done;
+  !n
+
 let effect_deprecated l =
   Reporting.warn ~once_from:__POS__ "Deprecated" l "Explicit effect annotations are deprecated. They are no longer used and can be removed."
 
 let cast_deprecated l =
   Reporting.warn ~once_from:__POS__ "Deprecated" l "Cast annotations are deprecated. They will be removed in a future version of the language."
 
+let old_bitfield_deprecated ?(bitfield = "<bitfield>") l field =
+  let replace = if field = "bits" then Printf.sprintf "%s.bits" bitfield else Printf.sprintf "%s[%s]" bitfield field in
+  Reporting.warn ~once_from:__POS__ "Deprecated" l
+    ("Old bitfield syntax, use '" ^ replace ^ "' instead")
+
 let warn_extern_effect l =
   Reporting.warn ~once_from:__POS__ "Deprecated" l "All external bindings should be marked as either monadic or pure"
+
+let forwards_mapcl_deprecated l =
+  Reporting.warn ~once_from:__POS__ "Deprecated" l "Single direction mapping clause should be prefixed by a direction, either forwards or backwards"
 
 let set_syntax_deprecated l =
   Reporting.warn ~once_from:__POS__ "Deprecated" l "Old set syntax, {|1, 2, 3|} can now be written as {1, 2, 3}."
@@ -254,8 +238,7 @@ let set_syntax_deprecated l =
 %token Enum Else False Forall Foreach Overload Function_ Mapping If_ In Inc Let_ Int Order Bool Cast
 %token Pure Monadic Register Return Scattered Sizeof Struct Then True TwoCaret TYPE Typedef
 %token Undefined Union Newtype With Val Outcome Constraint Throw Try Catch Exit Bitfield Constant
-%token Barr Depend Rreg Wreg Rmem Wmem Wmv Eamem Exmem Undef Unspec Nondet Escape
-%token Repeat Until While Do Mutual Var Ref Configuration TerminationMeasure Instantiation Impl
+%token Repeat Until While Do Mutual Var Ref Configuration TerminationMeasure Instantiation Impl Private
 %token InternalPLet InternalReturn InternalAssume
 %token Forwards Backwards
 
@@ -403,6 +386,12 @@ typ_no_caret:
                              $endpos) }
 
 typ:
+  | If_; cond_t = infix_typ; Then; then_t = infix_typ; Else; else_t = infix_typ
+    { mk_typ (ATyp_if (cond_t, then_t, else_t)) $startpos $endpos }
+  | t = infix_typ
+    { t }
+
+infix_typ:
   | prefix = prefix_typ_op;
     x = postfix_typ;
     xs = list(op = op; prefix = prefix_typ_op; y = postfix_typ { (IT_op op, $startpos(op), $endpos(op)) :: prefix @ y })
@@ -489,34 +478,10 @@ typquant:
     { TypQ_aux (TypQ_tq (List.map qi_id_of_kopt $1), loc $startpos $endpos) }
 
 effect:
-  | Barr
-    { mk_effect BE_barr $startpos $endpos }
-  | Depend
-    { mk_effect BE_depend $startpos $endpos }
-  | Rreg
-    { mk_effect BE_rreg $startpos $endpos }
-  | Wreg
-    { mk_effect BE_wreg $startpos $endpos }
-  | Rmem
-    { mk_effect BE_rmem $startpos $endpos }
-  | Wmem
-    { mk_effect BE_wmem $startpos $endpos }
-  | Wmv
-    { mk_effect BE_wmv $startpos $endpos }
-  | Eamem
-    { mk_effect BE_eamem $startpos $endpos }
-  | Exmem
-    { mk_effect BE_exmem $startpos $endpos }
-  | Undef
-    { mk_effect BE_undef $startpos $endpos }
-  | Unspec
-    { mk_effect BE_unspec $startpos $endpos }
-  | Nondet
-    { mk_effect BE_nondet $startpos $endpos }
-  | Escape
-    { mk_effect BE_escape $startpos $endpos }
+  | id
+    { $1 }
   | Configuration
-    { mk_effect BE_config $startpos $endpos }
+    { mk_id (Id "configuration") $startpos $endpos }
 
 effect_list:
   | effect
@@ -805,13 +770,17 @@ atomic_exp:
   | lit
     { mk_exp (E_lit $1) $startpos $endpos }
   | id MinusGt id Unit
-    { mk_exp (E_app (prepend_id "_mod_" $3, [mk_exp (E_ref $1) $startpos($1) $endpos($1)])) $startpos $endpos }
+    { old_bitfield_deprecated ~bitfield:(string_of_id $1) (loc $startpos $endpos) (string_of_id $3);
+      mk_exp (E_app (prepend_id "_mod_" $3, [mk_exp (E_ref $1) $startpos($1) $endpos($1)])) $startpos $endpos }
   | id MinusGt id Lparen exp_list Rparen
-    { mk_exp (E_app (prepend_id "_mod_" $3, mk_exp (E_ref $1) $startpos($1) $endpos($1) :: $5)) $startpos $endpos }
+    { old_bitfield_deprecated ~bitfield:(string_of_id $1) (loc $startpos $endpos) (string_of_id $3);
+      mk_exp (E_app (prepend_id "_mod_" $3, mk_exp (E_ref $1) $startpos($1) $endpos($1) :: $5)) $startpos $endpos }
   | atomic_exp Dot id Unit
-    { mk_exp (E_app (prepend_id "_mod_" $3, [$1])) $startpos $endpos }
+    { old_bitfield_deprecated (loc $startpos $endpos) (string_of_id $3);
+      mk_exp (E_app (prepend_id "_mod_" $3, [$1])) $startpos $endpos }
   | atomic_exp Dot id Lparen exp_list Rparen
-    { mk_exp (E_app (prepend_id "_mod_" $3, $1 :: $5)) $startpos $endpos }
+    { old_bitfield_deprecated (loc $startpos $endpos) (string_of_id $3);
+      mk_exp (E_app (prepend_id "_mod_" $3, $1 :: $5)) $startpos $endpos }
   | atomic_exp Dot id
     { mk_exp (E_field ($1, $3)) $startpos $endpos }
   | id
@@ -896,6 +865,8 @@ vector_update_list:
     { $1 :: $3 }
 
 funcl_annotation:
+  | visibility = Private
+    { (fun funcl -> FCL_aux (FCL_private funcl, loc $startpos(visibility) $endpos(visibility))) }
   | attr = Attribute
     { (fun funcl -> FCL_aux (FCL_attribute (fst attr, snd attr, funcl), loc $startpos(attr) $endpos(attr))) }
   | doc = Doc
@@ -1003,6 +974,8 @@ type_def:
     { mk_td (TD_abbrev ($2, $3, $5, $7)) $startpos $endpos }
   | Typedef id Colon kind Eq typ
     { mk_td (TD_abbrev ($2, mk_typqn, $4, $6)) $startpos $endpos }
+  | Typedef id Colon kind
+    { mk_td (TD_abstract ($2, $4)) $startpos $endpos }
   | Struct id Eq Lcurly struct_fields Rcurly
     { mk_td (TD_record ($2, TypQ_aux (TypQ_tq [], loc $endpos($2) $startpos($3)), $5)) $startpos $endpos }
   | Struct id typaram Eq Lcurly struct_fields Rcurly
@@ -1061,8 +1034,10 @@ struct_fields:
     { $1 :: $3 }
 
 type_union:
+  | visibility = Private; tu = type_union
+    { Tu_aux (Tu_private tu, loc $startpos(visibility) $endpos(visibility)) }
   | attr = Attribute; tu = type_union
-    { Tu_aux (Tu_attribute (fst attr, snd attr, tu), loc $startpos $endpos) }
+    { Tu_aux (Tu_attribute (fst attr, snd attr, tu), loc $startpos(attr) $endpos(attr)) }
   | doc = Doc; tu = type_union
     { Tu_aux (Tu_doc (doc, tu), loc $startpos(doc) $endpos(doc)) }
   | id Colon typ
@@ -1173,11 +1148,12 @@ mapcl:
   | mpexp Bidir mpexp
     { mk_bidir_mapcl $1 $3 $startpos $endpos }
   | mpexp EqGt exp
-    { mk_forwards_mapcl $1 $3 $startpos $endpos }
-  | Forwards mpexp EqGt exp
-    { mk_forwards_mapcl $2 $4 $startpos $endpos }
-  | Backwards mpexp EqGt exp
-    { mk_backwards_mapcl $2 $4 $startpos $endpos }
+    { forwards_mapcl_deprecated (loc $startpos $endpos);
+      mk_forwards_mapcl_deprecated $1 $3 $startpos $endpos }
+  | Forwards case
+    { mk_forwards_mapcl $2 $startpos $endpos }
+  | Backwards case
+    { mk_backwards_mapcl $2 $startpos $endpos }
 
 mapcl_list:
   | mapcl Comma?
@@ -1342,16 +1318,22 @@ def_aux:
     { DEF_scattered $1 }
   | default_def
     { DEF_default $1 }
+  | Constraint typ
+    { DEF_constraint $2 }
   | Mutual Lcurly fun_def_list Rcurly
     { DEF_internal_mutrec $3 }
   | Pragma
-    { DEF_pragma (fst $1, snd $1) }
+    { let (pragma, arg) = $1 in
+      let ltrim = pragma_left_spaces pragma $startpos arg in
+      DEF_pragma (pragma, String.trim arg, ltrim) }
   | TerminationMeasure id pat Eq exp
     { DEF_measure ($2, $3, $5) }
   | TerminationMeasure id loop_measures
     { DEF_loop_measures ($2,$3) }
 
 def:
+  | visibility = Private; def = def
+    { DEF_aux (DEF_private def, loc $startpos(visibility) $endpos(visibility)) }
   | attr = Attribute; def = def
     { DEF_aux (DEF_attribute (fst attr, snd attr, def), loc $startpos(attr) $endpos(attr)) }
   | doc = Doc; def = def

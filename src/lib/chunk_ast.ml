@@ -595,6 +595,12 @@ let rec chunk_atyp comments chunks (ATyp_aux (aux, l)) =
   | ATyp_neg arg ->
       let arg_chunks = rec_chunk_atyp arg in
       Queue.add (Unary ("-", arg_chunks)) chunks
+  | ATyp_if (i, t, e) ->
+      let if_format = { then_brace = false; else_brace = false } in
+      let i_chunks = rec_chunk_atyp i in
+      let t_chunks = rec_chunk_atyp t in
+      let e_chunks = rec_chunk_atyp e in
+      Queue.add (If_then_else (if_format, i_chunks, t_chunks, e_chunks)) chunks
   | ATyp_inc -> Queue.add (Atom "inc") chunks
   | ATyp_dec -> Queue.add (Atom "dec") chunks
   | ATyp_fn (lhs, rhs, _) ->
@@ -1063,6 +1069,10 @@ let chunk_funcl comments funcl =
   let chunks = Queue.create () in
   let rec chunk_funcl' comments (FCL_aux (aux, _)) =
     match aux with
+    | FCL_private funcl ->
+        Queue.add (Atom "private") chunks;
+        Queue.add (Spacer (false, 1)) chunks;
+        chunk_funcl' comments funcl
     | FCL_attribute (attr, arg, funcl) ->
         Queue.add (Atom (Printf.sprintf "$[%s %s]" attr arg)) chunks;
         Queue.add (Spacer (false, 1)) chunks;
@@ -1277,7 +1287,7 @@ let chunk_def source last_line_span comments chunks (DEF_aux (def, l)) =
   begin
     match def with
     | DEF_fundef fdef -> chunk_fundef comments chunks fdef
-    | DEF_pragma (pragma, arg) ->
+    | DEF_pragma (pragma, arg, _) ->
         Queue.add (Pragma (pragma, arg)) chunks;
         pragma_span := true
     | DEF_default dts -> chunk_default_typing_spec comments chunks dts
