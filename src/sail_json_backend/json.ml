@@ -71,6 +71,9 @@ open Ast
 open Ast_defs
 open Ast_util
 
+external length : string -> int = "%string_length"
+external unsafe_get : string -> int -> char = "%string_unsafe_get"
+
 let debug_enabled =
   match Sys.getenv_opt "SAIL_DEBUG" with Some value -> value = "1" || int_of_string_opt value = Some 1 | None -> false
 
@@ -91,9 +94,23 @@ let mappings = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
+(* excerpt taken from ocaml/stdlib/string.ml *)
+let starts_with ~prefix s =
+  let len_s = length s and len_pre = length prefix in
+  let rec aux i = if i = len_pre then true else if unsafe_get s i <> unsafe_get prefix i then false else aux (i + 1) in
+  len_s >= len_pre && aux 0
+
+(* excerpt taken from ocaml/stdlib/string.ml *)
+let ends_with ~suffix s =
+  let len_s = length s and len_suf = length suffix in
+  let diff = len_s - len_suf in
+  let rec aux i =
+    if i = len_suf then true else if unsafe_get s (diff + i) <> unsafe_get suffix i then false else aux (i + 1)
+  in
+  diff >= 0 && aux 0
+
 let dequote qs =
-  if String.starts_with ~prefix:"\"" qs && String.ends_with ~suffix:"\"" qs then
-    List.hd (List.tl (String.split_on_char '"' qs))
+  if starts_with ~prefix:"\"" qs && ends_with ~suffix:"\"" qs then List.hd (List.tl (String.split_on_char '"' qs))
   else qs
 
 let string_of_arg = function E_aux (E_id id, _) -> "\"" ^ string_of_id id ^ "\"" | exp -> "exp " ^ string_of_exp exp
@@ -394,8 +411,7 @@ let identity_funcs =
   ]
 
 let defunction f n =
-  if String.starts_with ~prefix:(n ^ "(") f then
-    String.sub f (String.length n + 1) (String.length f - String.length n - 2)
+  if starts_with ~prefix:(n ^ "(") f then String.sub f (String.length n + 1) (String.length f - String.length n - 2)
   else f
 
 let remove_identity_funcs op =
@@ -529,10 +545,10 @@ let extract_func_arg s = List.hd (String.split_on_char ')' (List.hd (List.tl (St
 let rec string_of_sizeof_field k f =
   debug_print ("string_of_sizeof_field " ^ k ^ ":" ^ f);
 
-  if String.starts_with ~prefix:"0b" f then (* binary literal "0b..." *)
+  if starts_with ~prefix:"0b" f then (* binary literal "0b..." *)
     string_of_int (String.length f - 2)
   else if String.contains f '(' then
-    if String.starts_with ~prefix:"bits(" f then (* bits(n) *)
+    if starts_with ~prefix:"bits(" f then (* bits(n) *)
       extract_func_arg f
     else (
       let op_func = List.hd (String.split_on_char '(' f) in
@@ -549,7 +565,7 @@ let rec string_of_sizeof_field k f =
           (* try to drill down to a base type *)
           let bt = basetype t in
           if bt = "bool" then "1"
-          else if String.starts_with ~prefix:"bits(" bt then extract_func_arg bt
+          else if starts_with ~prefix:"bits(" bt then extract_func_arg bt
           else begin
             debug_print ("unfamiliar base type " ^ bt);
             "72" (* TODO: needs work *)
@@ -649,7 +665,7 @@ let rec explode_mnemonics asm =
   else if String.equal (List.hd asm) "spc" then ["" :: List.tl asm]
   else (
     let tails = explode_mnemonics (List.tl asm) in
-    if String.ends_with ~suffix:")" (List.hd asm) then begin
+    if ends_with ~suffix:")" (List.hd asm) then begin
       debug_print (extract_func_arg (List.hd asm));
       let heads = Hashtbl.find_all mappings (List.hd (String.split_on_char '(' (List.hd asm))) in
       let found =
