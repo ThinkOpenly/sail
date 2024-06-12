@@ -111,28 +111,16 @@ let parse_reg_name name =
 let json_of_registers () =
   let regs = Hashtbl.fold (fun name regtype accum -> (name, regtype) :: accum) registers [] in
   let sorted_regs =
-    List.sort
-      (fun (n1, t1) (n2, t2) ->
-        match String.compare t1 t2 with
-        | 0 ->
-            (* If types are the same, sort by parsed number *)
-            let num1 = parse_reg_name n1 in
-            let num2 = parse_reg_name n2 in
-            if num1 = num2 then String.compare n1 n2 else compare num1 num2
-        | c -> c
-      )
-      regs
+    List.sort (fun (n1, t1) (n2, t2) -> match String.compare t1 t2 with 0 -> String.compare n1 n2 | c -> c) regs
   in
   let json_regs =
     List.map
       (fun (name, regtype) ->
-        "\n  {\n" ^ "    \"name\": \"" ^ name ^ "\",\n" ^ "    \"type\": \"" ^ regtype ^ "\"\n  },"
+        "\n  {\n" ^ "    \"name\": \"" ^ name ^ "\",\n" ^ "    \"type\": \"" ^ regtype ^ "\"\n" ^ "  },"
       )
       sorted_regs
   in
-  let reg_list = String.concat "" json_regs in
-  let final_reg_list = if reg_list = "" then "" else String.sub reg_list 0 (String.length reg_list - 1) in
-  "[ " ^ final_reg_list ^ "\n]"
+  "[ " ^ String.concat "" json_regs ^ "\n]"
 
 let rec string_list_of_mpat x =
   match x with
