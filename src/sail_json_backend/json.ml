@@ -751,11 +751,15 @@ let defs { defs; _ } =
   print_endline "  ],";
 
   print_endline "  \"functions\": [";
-  Hashtbl.iter
-    (fun name source ->
-      print_endline ("  {\n    \"name\": \"" ^ name ^ "\",");
-      print_endline ("    \"source\": \"" ^ String.escaped source ^ "\"\n  },")
-    )
-    functions;
+  print_endline
+    (String.concat ",\n"
+       (Hashtbl.fold
+          (fun name source accum ->
+            ("  {\n    \"name\": \"" ^ name ^ "\",\n" ^ "    \"source\": \"" ^ String.escaped source ^ "\"\n  }")
+            :: accum
+          )
+          functions []
+       )
+    );
   print_endline "  ]";
   print_endline "}"
