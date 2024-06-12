@@ -99,14 +99,6 @@ let dequote qs =
 
 let string_of_arg = function E_aux (E_id id, _) -> "\"" ^ string_of_id id ^ "\"" | exp -> "exp " ^ string_of_exp exp
 
-(* Function to parse the number at the end of a register name *)
-let parse_reg_name name =
-  try
-    let i = String.rindex name '_' + 1 in
-    (* Find the last underscore, start reading the number just after it *)
-    int_of_string (String.sub name i (String.length name - i))
-  with _ -> -1 (* Return -1 if no number is found or the substring operation fails *)
-
 (* Function to parse the register type from the register name *)
 let json_of_registers () =
   let regs = Hashtbl.fold (fun name regtype accum -> (name, regtype) :: accum) registers [] in
