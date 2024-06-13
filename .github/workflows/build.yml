@@ -53,6 +53,11 @@ jobs:
         opam pin --yes --no-action add .
         opam install sail --yes
 
+    - name: Test Sail
+      run: |
+        eval $(opam env)
+        etc/ci_core_tests.sh
+
     - name: Checkout `sail-riscv` repo
       uses: actions/checkout@v3
       with:
