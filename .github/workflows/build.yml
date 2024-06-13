@@ -53,7 +53,12 @@ jobs:
         opam pin --yes --no-action add .
         opam install sail --yes
 
-    - name: Test Sail
+    - name: Checkout `sail-riscv` repo
+      uses: actions/checkout@v3
+      with:
+        repository: ThinkOpenly/sail-riscv
+
+    - name: Validate Json
       run: |
-        eval $(opam env)
-        etc/ci_core_tests.sh
+          eval $(opam env)
+          make check-json
