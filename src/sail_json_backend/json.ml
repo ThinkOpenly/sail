@@ -88,6 +88,7 @@ let op_functions = Hashtbl.create 997
 let formats = Hashtbl.create 997
 let extensions = Hashtbl.create 997
 let mappings = Hashtbl.create 997
+let registers = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
@@ -97,6 +98,21 @@ let dequote qs =
   else qs
 
 let string_of_arg = function E_aux (E_id id, _) -> "\"" ^ string_of_id id ^ "\"" | exp -> "exp " ^ string_of_exp exp
+
+(* Function to parse the register type from the register name *)
+let json_of_registers () =
+  let regs = Hashtbl.fold (fun name regtype accum -> (name, regtype) :: accum) registers [] in
+  let sorted_regs =
+    List.sort (fun (n1, t1) (n2, t2) -> match String.compare t1 t2 with 0 -> String.compare n1 n2 | c -> c) regs
+  in
+  let json_regs =
+    List.map
+      (fun (name, regtype) ->
+        "\n  {\n" ^ "    \"name\": \"" ^ name ^ "\",\n" ^ "    \"type\": \"" ^ regtype ^ "\"\n" ^ "  }"
+      )
+      sorted_regs
+  in
+  "[ " ^ String.concat ",\n" json_regs ^ "\n]"
 
 let rec string_list_of_mpat x =
   match x with
@@ -675,6 +691,10 @@ let defs { defs; _ } =
       | DEF_aux (DEF_mapdef (MD_aux (MD_mapping (i, _, ml), _)), _) ->
           debug_print "DEF_mapdef";
           List.iter (parse_mapcl i) ml
+      | DEF_aux (DEF_register (DEC_aux (DEC_reg (atyp, id, _), _)), _) ->
+          let reg_name = string_of_id id in
+          let reg_type = string_of_typ atyp in
+          Hashtbl.add registers reg_name reg_type
       | _ -> debug_print ~printer:prerr_string ""
     )
     defs;
@@ -732,6 +752,9 @@ let defs { defs; _ } =
     (String.concat ",\n" (List.map (fun a -> json_of_instruction (List.hd a) (List.tl a)) key_mnemonic_sorted));
 
   print_endline "  ],";
+  print_endline "  \"registers\": ";
+  print_endline (json_of_registers ());
+  print_endline ",";
 
   print_endline "  \"formats\": [";
   let format_list = Hashtbl.fold (fun k v accum -> ("\"" ^ v ^ "\"") :: accum) formats [] in
