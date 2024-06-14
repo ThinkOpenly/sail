@@ -159,12 +159,20 @@ let rec string_list_of_mpat x =
       List.concat (List.map string_list_of_mpat mpl)
   | _ -> assert false
 
+let extract_enum operandl app_id =
+  match List.rev operandl with
+  | [] -> failwith "Empty List"
+  | hd :: _ ->
+      if String.uppercase_ascii hd = hd then hd (* Check if hd is an enum type *)
+      else string_of_id app_id (* Return the primary key *)
+
 let parse_encdec_mpat mp pb format =
   match mp with
   | MP_aux (MP_app (app_id, mpl), _) ->
       debug_print ("MP_app " ^ string_of_id app_id);
       Hashtbl.add formats (string_of_id app_id) format;
       let operandl = List.concat (List.map string_list_of_mpat mpl) in
+      let enum = extract_enum operandl app_id in
       begin
         List.iter debug_print operandl;
         debug_print "MCL_bidir (right part)";
@@ -172,11 +180,11 @@ let parse_encdec_mpat mp pb format =
         | MPat_aux (MPat_pat p, _) ->
             debug_print "MPat_pat ";
             List.iter debug_print (string_list_of_mpat p);
-            Hashtbl.add encodings (string_of_id app_id) (string_list_of_mpat p)
+            Hashtbl.add encodings (string_of_id app_id) (enum :: string_list_of_mpat p)
         | MPat_aux (MPat_when (p, e), _) ->
             debug_print "MPat_when ";
             List.iter debug_print (string_list_of_mpat p);
-            Hashtbl.add encodings (string_of_id app_id) (string_list_of_mpat p)
+            Hashtbl.add encodings (string_of_id app_id) (enum :: string_list_of_mpat p)
       end;
       string_of_id app_id
   | _ -> assert false
@@ -557,7 +565,11 @@ let rec string_of_sizeof_field k f =
     )
   else begin
     (* match operand names to function signature types *)
-    let opmap = List.combine (Hashtbl.find operands k) (Hashtbl.find sigs k) in
+    let opmap =
+      match (Hashtbl.find_opt operands k, Hashtbl.find_opt sigs k) with
+      | Some operands_list, Some sigs_list -> List.combine operands_list sigs_list
+      | _ -> []
+    in
     begin
       (* find matching operand type *)
       match List.assoc_opt f opmap with
