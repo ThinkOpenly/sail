@@ -108,12 +108,12 @@ let json_of_registers () =
   let json_regs =
     List.map
       (fun (name, regtype) ->
-        "\n  {\n" ^ "    \"name\": \"" ^ name ^ "\",\n" ^ "    \"type\": \"" ^ regtype ^ "\"\n" ^ "  },"
+        "\n  {\n" ^ "    \"name\": \"" ^ name ^ "\",\n" ^ "    \"type\": \"" ^ regtype ^ "\"\n" ^ "  }"
       )
       sorted_regs
   in
-  "[ " ^ String.concat "" json_regs ^ "\n]"
-
+  "[ " ^ String.concat ",\n" json_regs ^ "\n]"
+  
 let rec string_list_of_mpat x =
   match x with
   | MP_aux (MP_lit l, _) ->
