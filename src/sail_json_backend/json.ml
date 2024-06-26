@@ -80,6 +80,7 @@ let sigs = Hashtbl.create 997
 let names = Hashtbl.create 997
 let descriptions = Hashtbl.create 997
 let operands = Hashtbl.create 997
+let inputs = Hashtbl.create 997
 let encodings = Hashtbl.create 997
 let assembly = Hashtbl.create 997
 let assembly_clean = Hashtbl.create 997
@@ -230,6 +231,7 @@ let parse_encdec i mc format =
             end
       end
   | _ -> assert false
+  
 
 let add_assembly app_id p =
   let x = string_list_of_mpat p in
@@ -242,9 +244,10 @@ let parse_assembly_mpat mp pb =
   match mp with
   | MP_aux (MP_app (app_id, mpl), _) ->
       debug_print ("MP_app " ^ string_of_id app_id);
-      let operandl = List.concat (List.map string_list_of_mpat mpl) in
+      let inputl = List.concat (List.map string_list_of_mpat mpl) in
+      Hashtbl.add inputs (string_of_id app_id) inputl;
       begin
-        List.iter debug_print operandl;
+        List.iter debug_print inputl;
         debug_print "MCL_bidir (right part)";
         match pb with
         | MPat_aux (MPat_pat p, _) ->
