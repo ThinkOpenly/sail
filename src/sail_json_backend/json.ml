@@ -231,48 +231,54 @@ let parse_encdec i mc format =
             end
       end
   | _ -> assert false
-  
-let extract_operands k =
+
+let filter_non_operands components =
+  let rec aux acc = function
+    | [] -> List.rev acc
+    | hd :: tl -> if String.trim hd = "spc" then tl else aux (hd :: acc) tl
+  in
+  aux [] components
+
+let extract_operands regex components =
+  let rec aux acc = function
+    | [] -> List.rev acc
+    | hd :: tl ->
+        if Str.string_match regex hd 0 then (
+          let operand = Str.matched_group 1 hd in
+          let trimmed_operand =
+            try
+              let comma_index = String.index operand ',' in
+              debug_print ("Operand before trimming: " ^ operand);
+              let trimmed = String.sub operand 0 comma_index in
+              debug_print ("Final trimmed operand: " ^ trimmed);
+              trimmed
+            with Not_found -> operand
+          in
+          aux (trimmed_operand :: acc) tl
+        )
+        else aux acc tl
+  in
+  aux [] components
+
+let extract_and_map_operands k =
   let components = Hashtbl.find assembly k in
   let regex = Str.regexp ".+(\\(.*\\))" in
-  let rec pre_filter acc = function
-    | [] -> List.rev acc
-    | hd :: tl ->
-      if String.trim hd = "spc" then
-        tl
-      else
-        pre_filter ( hd :: acc ) tl
-  in
-  let filtered_components = pre_filter [] components in 
-  let rec extract acc = function
-    | [] -> List.rev acc
-    | hd :: tl ->
-      if Str.string_match regex hd 0 then
-        let operand = Str.matched_group 1 hd in
-        let trimmed_operand = 
-          try
-            let comma_index = String.index operand ',' in
-            let trimmed = String.sub operand 0 comma_index in
-            debug_print ("Trimmed operand using comma: " ^ trimmed);
-            trimmed
-          with Not_found -> 
-          debug_print ("No comma found in operand: " ^ operand);
-          operand
-        in     
-        debug_print ("Final trimmed operand: " ^ trimmed_operand);  
-        extract (trimmed_operand :: acc) tl
-    else
-      extract acc tl
-  in
-  let operandl = extract [] filtered_components in
+  let filtered_components = filter_non_operands components in
+  let operandl = extract_operands regex filtered_components in
   let opmap = List.combine (Hashtbl.find inputs k) (Hashtbl.find sigs k) in
-  let operand_with_type = List.map (fun op ->
-    match List.find_opt (fun (name,_) -> String.equal name op) opmap with
-    | Some (_, t) -> (op, t)
-    | None -> (op, "")
-  ) operandl in
-  debug_print ("Adding to operands hashtable: " ^ k ^ " -> " ^ 
-    String.concat ", " (List.map (fun (op, t) -> Printf.sprintf "(%s, %s)" op t) operand_with_type)); 
+  let operand_with_type =
+    List.map
+      (fun op ->
+        match List.find_opt (fun (name, _) -> String.equal name op) opmap with
+        | Some (_, t) -> (op, t)
+        | None -> (op, "")
+      )
+      operandl
+  in
+  debug_print
+    ("Adding to operands hashtable: " ^ k ^ " -> "
+    ^ String.concat ", " (List.map (fun (op, t) -> Printf.sprintf "(%s, %s)" op t) operand_with_type)
+    );
   Hashtbl.add operands k operand_with_type
 
 let add_assembly app_id p =
@@ -280,7 +286,7 @@ let add_assembly app_id p =
   begin
     debug_print ("assembly.add " ^ string_of_id app_id ^ " : " ^ List.hd x);
     Hashtbl.add assembly (string_of_id app_id) x;
-    extract_operands (string_of_id app_id)
+    extract_and_map_operands (string_of_id app_id)
   end
 
 let parse_assembly_mpat mp pb =
@@ -599,7 +605,9 @@ let json_of_operands k =
         (List.map
            (fun (op, _) -> json_of_operand k op)
            (List.filter
-              (fun (s, _) -> not (String.equal s "(" || String.equal s ")" || String.equal s "spc" || String.equal s "sep"))
+              (fun (s, _) ->
+                not (String.equal s "(" || String.equal s ")" || String.equal s "spc" || String.equal s "sep")
+              )
               ops
            )
         )
@@ -788,7 +796,9 @@ let defs { defs; _ } =
   debug_print "DESCRIPTIONS";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ v)) descriptions;
   debug_print "OPERANDS";
-  Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun (op, t) -> "(" ^ op ^ ", " ^ t ^ ")") v)) operands;
+  Hashtbl.iter
+    (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun (op, t) -> "(" ^ op ^ ", " ^ t ^ ")") v))
+    operands;
   debug_print "ENCODINGS";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun x -> x) v)) encodings;
   debug_print "ASSEMBLY";
