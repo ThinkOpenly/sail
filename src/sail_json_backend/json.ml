@@ -615,7 +615,18 @@ let rec string_of_sizeof_field k f =
     end
   end
 
-let json_of_field k f = "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ " }"
+let is_reserved_field field_name = 
+  let reserved_prefix = "reserved_bits_" in 
+  String.length field_name >= String.length reserved_prefix && 
+  String.sub field_name 0 (String.length reserved_prefix) = reserved_prefix 
+
+
+let json_of_field k f = 
+  base_string = "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ " }" in
+  if is_reserved_field f then
+    "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ ", \"reserved\": true }"
+  else 
+    base_string
 
 let json_of_fields k =
   match Hashtbl.find_opt encodings k with
