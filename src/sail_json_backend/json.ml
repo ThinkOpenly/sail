@@ -621,7 +621,7 @@ let is_reserved_field field_name =
   String.sub field_name 0 (String.length reserved_prefix) = reserved_prefix 
 
 let json_of_field k f = 
-  base_string = "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ " }" in
+  base_string = "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ " }"
   if is_reserved_field f then
     "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ ", \"reserved\": true }"
   else 
