@@ -258,8 +258,7 @@ let extract_operands k regex components =
   in
   aux [] components
 
-let extract_and_map_operands k =
-  let components = Hashtbl.find assembly k in
+let extract_and_map_operands k components =
   let regex = Str.regexp ".+(\\(.*\\))" in
   let filtered_components = filter_non_operands components in
   let operandl = extract_operands k regex filtered_components in
@@ -284,7 +283,7 @@ let add_assembly app_id p =
   begin
     debug_print ("assembly.add " ^ string_of_id app_id ^ " : " ^ List.hd x);
     Hashtbl.add assembly (string_of_id app_id) x;
-    extract_and_map_operands (string_of_id app_id)
+    extract_and_map_operands (string_of_id app_id) x
   end
 
 let parse_assembly_mpat mp pb =
