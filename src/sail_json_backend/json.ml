@@ -239,29 +239,31 @@ let filter_non_operands components =
   in
   aux [] components
 
-let extract_operands k regex components =
+let extract_operands k components =
   let rec aux acc = function
     | [] -> List.rev acc
     | hd :: tl ->
-        if Str.string_match regex hd 0 then (
+        if Str.string_match (Str.regexp ".+(\\(.*\\))") hd 0 then (
           let operand = Str.matched_group 1 hd in
+          let elements = Str.split (Str.regexp ",") operand in
           try
-            let comma_index = String.index operand ',' in
-            debug_print ("Operand before trimming: " ^ operand);
-            let trimmed = String.sub operand 0 comma_index in
-            debug_print ("Final trimmed operand: " ^ trimmed);
             let inputl = Hashtbl.find inputs k in
             if List.mem trimmed inputl then aux (trimmed :: acc) tl else aux acc tl
           with Not_found -> aux (operand :: acc) tl
+            let acc =
+              List.fold_left (fun acc element -> if List.mem element inputl then element :: acc else acc) acc elements
+            in
+
+            aux acc tl
+          with Not_found -> aux acc tl
         )
         else aux acc tl
   in
   aux [] components
 
 let extract_and_map_operands k components =
-  let regex = Str.regexp ".+(\\(.*\\))" in
   let filtered_components = filter_non_operands components in
-  let operandl = extract_operands k regex filtered_components in
+  let operandl = extract_operands k filtered_components in
   let opmap = List.combine (Hashtbl.find inputs k) (Hashtbl.find sigs k) in
   let operand_with_type =
     List.map
