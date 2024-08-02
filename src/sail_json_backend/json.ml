@@ -232,34 +232,27 @@ let parse_encdec i mc format =
       end
   | _ -> assert false
 
-let filter_non_operands components =
-  let rec aux acc = function
-    | [] -> List.rev acc
-    | hd :: tl -> if String.trim hd = "spc" then tl else aux (hd :: acc) tl
-  in
-  aux [] components
+let rec filter_non_operands components =
+  match components with
+  | [] -> []
+  | hd :: tl when String.trim hd = "spc" -> tl
+  | _ -> filter_non_operands (List.tl components)
 
-let extract_operands k components =
-  let rec aux acc = function
-    | [] -> List.rev acc
-    | hd :: tl ->
-        if Str.string_match (Str.regexp ".+(\\(.*\\))") hd 0 then (
-          let operand = Str.matched_group 1 hd in
-          let elements = Str.split (Str.regexp ",") operand in
-          try
-            let inputl = Hashtbl.find inputs k in
-            if List.mem trimmed inputl then aux (trimmed :: acc) tl else aux acc tl
-          with Not_found -> aux (operand :: acc) tl
-            let acc =
-              List.fold_left (fun acc element -> if List.mem element inputl then element :: acc else acc) acc elements
-            in
-
-            aux acc tl
-          with Not_found -> aux acc tl
-        )
-        else aux acc tl
-  in
-  aux [] components
+let rec extract_operands k filtered_components =
+  match filtered_components with
+  | [] -> []
+  | hd :: tl ->
+      if Str.string_match (Str.regexp ".+(\\(.*\\))") hd 0 then (
+        let operand = Str.matched_group 1 hd in
+        let elements = Str.split (Str.regexp ",") operand in
+        let filtered_elements =
+          match Hashtbl.find_opt inputs k with
+          | None -> []
+          | Some inputl -> List.filter (fun element -> List.mem element inputl) elements
+        in
+        filtered_elements @ extract_operands k tl
+      )
+      else extract_operands k tl
 
 let extract_and_map_operands k components =
   let filtered_components = filter_non_operands components in
