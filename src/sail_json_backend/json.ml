@@ -80,6 +80,7 @@ let sigs = Hashtbl.create 997
 let names = Hashtbl.create 997
 let descriptions = Hashtbl.create 997
 let operands = Hashtbl.create 997
+let inputs = Hashtbl.create 997
 let encodings = Hashtbl.create 997
 let assembly = Hashtbl.create 997
 let assembly_clean = Hashtbl.create 997
@@ -231,20 +232,63 @@ let parse_encdec i mc format =
       end
   | _ -> assert false
 
+let rec filter_non_operands components =
+  match components with
+  | [] -> []
+  | hd :: tl when String.trim hd = "spc" -> tl
+  | _ -> filter_non_operands (List.tl components)
+
+let rec extract_operands k filtered_components =
+  (*This looks for operands embedded within functions like "funct(op1 @ op2 @ 0b00)" *)
+  match filtered_components with
+  | [] -> []
+  | hd :: tl ->
+      if Str.string_match (Str.regexp ".+(\\(.*\\))") hd 0 then (
+        let elements = Str.split (Str.regexp ",") (Str.matched_group 1 hd) in
+        let filtered_elements =
+          match Hashtbl.find_opt inputs k with
+          | None -> []
+          | Some inputl -> List.filter (fun element -> List.mem element inputl) elements
+        in
+        filtered_elements @ extract_operands k tl
+      )
+      else extract_operands k tl
+
+let extract_and_map_operands k components =
+  let filtered_components = filter_non_operands components in
+  let operandl = extract_operands k filtered_components in
+  let opmap = List.combine (Hashtbl.find inputs k) (Hashtbl.find sigs k) in
+  let operand_with_type =
+    List.map
+      (fun op ->
+        match List.find_opt (fun (name, _) -> String.equal name op) opmap with
+        | Some (_, t) -> (op, t)
+        | None -> (op, "")
+      )
+      operandl
+  in
+  debug_print
+    ("Adding to operands hashtable: " ^ k ^ " -> "
+    ^ String.concat ", " (List.map (fun (op, t) -> Printf.sprintf "(%s, %s)" op t) operand_with_type)
+    );
+  Hashtbl.add operands k operand_with_type
+
 let add_assembly app_id p =
   let x = string_list_of_mpat p in
   begin
     debug_print ("assembly.add " ^ string_of_id app_id ^ " : " ^ List.hd x);
-    Hashtbl.add assembly (string_of_id app_id) x
+    Hashtbl.add assembly (string_of_id app_id) x;
+    extract_and_map_operands (string_of_id app_id) x
   end
 
 let parse_assembly_mpat mp pb =
   match mp with
   | MP_aux (MP_app (app_id, mpl), _) ->
       debug_print ("MP_app " ^ string_of_id app_id);
-      let operandl = List.concat (List.map string_list_of_mpat mpl) in
+      let inputl = List.concat (List.map string_list_of_mpat mpl) in
+      Hashtbl.add inputs (string_of_id app_id) inputl;
       begin
-        List.iter debug_print operandl;
+        List.iter debug_print inputl;
         debug_print "MCL_bidir (right part)";
         match pb with
         | MPat_aux (MPat_pat p, _) ->
@@ -393,9 +437,8 @@ let parse_funcl fcl =
           Hashtbl.add functions id source_code
       | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) ->
           debug_print ("FCL_funcl execute " ^ string_of_id i);
-          let operandl = List.concat (List.map string_list_of_pat pl) in
-          if not (String.equal (List.hd operandl) "()") then Hashtbl.add operands (string_of_id i) operandl;
-          Hashtbl.add executes (string_of_id i) (extract_source_code (Ast_util.exp_loc e))
+          let source_code = extract_source_code (Ast_util.exp_loc e) in
+          Hashtbl.add executes (string_of_id i) source_code
       | _ -> ()
     end
   | _ -> debug_print "FCL_funcl other"
@@ -533,7 +576,7 @@ let default_operand optional opt_operand =
 
 let json_of_operand k op =
   debug_print ("json_of_operand " ^ k ^ ":" ^ op);
-  let opmap = List.combine (Hashtbl.find operands k) (Hashtbl.find sigs k) in
+  let opmap = Hashtbl.find operands k in
   let opplus = remove_identity_funcs op in
   let opname = List.hd (String.split_on_char ',' opplus) in
   let optional, opt_operand = optional_operand k op in
@@ -552,9 +595,11 @@ let json_of_operands k =
   | Some ops ->
       String.concat ","
         (List.map
-           (fun op -> json_of_operand k op)
+           (fun (op, _) -> json_of_operand k op)
            (List.filter
-              (fun s -> not (String.equal s "(" || String.equal s ")" || String.equal s "spc" || String.equal s "sep"))
+              (fun (s, _) ->
+                not (String.equal s "(" || String.equal s ")" || String.equal s "spc" || String.equal s "sep")
+              )
               ops
            )
         )
@@ -592,7 +637,7 @@ let rec string_of_sizeof_field k f =
     )
   else begin
     (* match operand names to function signature types *)
-    let opmap = List.combine (Hashtbl.find operands k) (Hashtbl.find sigs k) in
+    let opmap = Hashtbl.find operands k in
     begin
       (* find matching operand type *)
       match List.assoc_opt f opmap with
@@ -743,7 +788,9 @@ let defs { defs; _ } =
   debug_print "DESCRIPTIONS";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ v)) descriptions;
   debug_print "OPERANDS";
-  Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun x -> x) v)) operands;
+  Hashtbl.iter
+    (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun (op, t) -> "(" ^ op ^ ", " ^ t ^ ")") v))
+    operands;
   debug_print "ENCODINGS";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ Util.string_of_list ", " (fun x -> x) v)) encodings;
   debug_print "ASSEMBLY";
