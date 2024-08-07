@@ -239,12 +239,12 @@ let rec filter_non_operands components =
   | _ -> filter_non_operands (List.tl components)
 
 let rec extract_operands k filtered_components =
+  (*This looks for operands embedded within functions like "funct(op1 @ op2 @ 0b00)" *)
   match filtered_components with
   | [] -> []
   | hd :: tl ->
       if Str.string_match (Str.regexp ".+(\\(.*\\))") hd 0 then (
-        let operand = Str.matched_group 1 hd in
-        let elements = Str.split (Str.regexp ",") operand in
+        let elements = Str.split (Str.regexp ",") (Str.matched_group 1 hd) in
         let filtered_elements =
           match Hashtbl.find_opt inputs k with
           | None -> []
