@@ -364,6 +364,14 @@ let parse_type_union i ucl =
   match ucl with
   | Tu_aux (Tu_ty_id (c, d), annot) ->
       debug_print ~printer:prerr_string ("Tu_ty_id " ^ string_of_id d ^ "(");
+      List.iter
+        (fun attr ->
+          match attr with _, "name", Some (AD_aux (AD_string s, _)) -> Hashtbl.add names (string_of_id d) s | _ -> ()
+        )
+        annot.attrs;
+      begin
+        match annot.doc_comment with None -> () | Some s -> Hashtbl.add descriptions (string_of_id d) s
+      end;
       begin
         match c with
         | Typ_aux (Typ_tuple x, _) ->
@@ -375,17 +383,7 @@ let parse_type_union i ucl =
               )
               x;
             let l = List.map string_of_typ x in
-            Hashtbl.add sigs (string_of_id d) l;
-            List.iter
-              (fun attr ->
-                match attr with
-                | _, "name", Some (AD_aux (AD_string s, _)) -> Hashtbl.add names (string_of_id d) s
-                | _ -> ()
-              )
-              annot.attrs;
-            begin
-              match annot.doc_comment with None -> () | Some s -> Hashtbl.add descriptions (string_of_id d) s
-            end
+            Hashtbl.add sigs (string_of_id d) l
         | Typ_aux (Typ_id i, _) -> Hashtbl.add sigs (string_of_id d) [string_of_id i]
         | Typ_aux (Typ_app (i, _), _) ->
             debug_print (string_of_typ c);
