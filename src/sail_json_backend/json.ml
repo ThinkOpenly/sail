@@ -671,8 +671,8 @@ let json_of_function k =
 
 let json_of_name k mnemonic =
   let name =
-    match Hashtbl.find_opt names k with
-    | None -> begin match Hashtbl.find_opt names mnemonic with None -> "TBD" | Some s -> String.escaped s end
+    match Hashtbl.find_opt names mnemonic with
+    | None -> begin match Hashtbl.find_opt names k with None -> "TBD" | Some s -> String.escaped s end
     | Some s -> String.escaped s
   in
   "\"" ^ name ^ "\""
