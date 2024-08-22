@@ -315,6 +315,49 @@ let parse_assembly i mc =
       end
   | _ -> assert false
 
+
+let add_formats app_id p =
+  let x = string_list_of_mpat p in
+  begin
+    debug_print("formats.add " ^ string_of_id app_id ^ " : " ^ List.hd x);
+    Hashtbl.add formats (string_of_id app_id) x;
+    extract_and_map_format_fields (string_of_id app_id) x
+  end
+
+let parse_fmtencdec_mpat mp pb =
+  match mp with
+  | MP_aux (MP_app (app_id, mpl), _) ->
+      debug_print ("MP_app " ^ string_of_id app_id);
+      let inputl = List.concat (List.map string_list_of_mpat mpl) in
+      Hashtbl.add inputs (string_of_id app_id) inputl;
+      begin
+        List.iter debug_print inputl;
+        debug_print "MCL_bidir (right part)";
+        match pb with
+        | MPat_aux (MPat_pat p, _) ->
+            debug_print "MPat_pat formats";
+            add_formats app_id p
+        | MPat_aux (MPat_when (p, e), _) ->
+            debug_print "MPat_when formats";
+            add_formats app_id p
+      end
+  | _ -> assert false
+
+let parse_fmtencdec i mc =
+  match mc with
+  | MCL_aux(MCL_bidir (pa, pb), _) ->
+     debug_print "MCL_bidir";
+     begin
+       match pa with
+       | MPat_aux (MPat_pat p, _) ->
+           debug_print "MPat_pat ";
+           parse_fmtencdec_mpat p pb
+       | MPat_aux (MPat_when (p, e), _) ->
+           debug_print "MPat_when ";
+           parse_fmtencdec_mpat p pb
+     end
+  | _ -> assert false
+    
 let parse_mapcl i mc =
   debug_print ("mapcl " ^ string_of_id i);
   let format =
@@ -334,6 +377,9 @@ let parse_mapcl i mc =
     | "assembly" ->
         debug_print (string_of_id i);
         parse_assembly i mc
+    | "fmtencdec" ->
+        debug_print (string_of_id i);
+        parse_fmtencdec i mc
     | _ -> begin
         match mc with
         | MCL_aux (MCL_bidir (MPat_aux (MPat_pat mpl, _), MPat_aux (MPat_pat mpr, _)), (annot, _)) ->
