@@ -483,6 +483,10 @@ let identity_funcs =
     "freg_or_reg_name";
     "vreg_name";
     "maybe_vmask";
+    "sew_flag";
+    "maybe_lmul_flag";
+    "maybe_ta_flag";
+    "maybe_ma_flag";
   ]
 
 let defunction f n =
