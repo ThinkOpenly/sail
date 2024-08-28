@@ -615,7 +615,15 @@ let json_of_syntax k =
         else if String.equal s "\"(\"" then "("
         else if String.equal s "\")\"" then ")"
         else if String.starts_with ~prefix:"maybe_" s then "[," ^ remove_identity_funcs s ^ "]"
-        else if String.contains s ',' then List.hd (Str.split (Str.regexp ",") (remove_identity_funcs s))
+        else if String.contains s ',' then (
+          let elements = Str.split (Str.regexp ",") (remove_identity_funcs s) in
+          let filtered_elements =
+            match Hashtbl.find_opt inputs k with
+            | None -> []
+            | Some inputl -> List.filter (fun element -> List.mem element inputl) elements
+          in
+          String.concat "," filtered_elements
+        )
         else remove_identity_funcs s
       )
       (List.tl (Hashtbl.find assembly_clean k))
