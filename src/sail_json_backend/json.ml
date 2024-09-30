@@ -198,14 +198,17 @@ let parse_encdec_mpat mp pb format =
       string_of_id app_id
   | _ -> assert false
 
-(* This looks for any "extension(string)", and does not, for example
+(* This looks for any "extensionEnabled(string)", and does not, for example
    account for negation. This case should be pretty unlikely, however. *)
 let rec find_extensions e =
   match e with
   | E_aux (E_app (i, el), _) ->
       debug_print ("E_app " ^ string_of_id i);
-      if String.equal (string_of_id i) "extension" then (
-        match List.hd el with E_aux (E_lit extension, _) -> [string_of_lit extension] | _ -> []
+      if String.equal (string_of_id i) "extensionEnabled" then (
+        List.map (fun exp -> 
+          let ext_str = string_of_exp exp in
+          "\"" ^ String.sub ext_str 4 (String.length ext_str - 4) ^ "\""
+        ) el
       )
       else List.concat (List.map find_extensions el)
   | _ ->
