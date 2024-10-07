@@ -198,12 +198,13 @@ let parse_encdec_mpat mp pb format =
       string_of_id app_id
   | _ -> assert false
 
-(* This looks for any "extensionEnabled(string)", and does not, for example
+(* This looks for any "extensionEnabled(enum)", and does not, for example
    account for negation. This case should be pretty unlikely, however. *)
 let rec find_extensions e =
   match e with
   | E_aux (E_app (i, el), _) ->
       debug_print ("E_app " ^ string_of_id i);
+      (* If it's extensionEnabled, we remove the Ext_ prefix (4 characters) *)
       if String.equal (string_of_id i) "extensionEnabled" then (
         List.map (fun exp -> 
           let ext_str = string_of_exp exp in
@@ -431,8 +432,9 @@ let extract_source_code l =
   | None -> "Error - couldn't locate func"
 
 let parse_funcl fcl =
-  match fcl with
-  | FCL_aux (FCL_funcl (Id_aux (Id id, _), Pat_aux (pat, _)), _) -> begin
+    debug_print("fcl " (string_of_arg fcl));
+    match fcl with
+    | FCL_aux (FCL_funcl (Id_aux (Id id, _), Pat_aux (pat, _)), _) -> begin
       match pat with
       | Pat_exp (P_aux (P_tuple pl, _), e) | Pat_when (P_aux (P_tuple pl, _), e, _) ->
           debug_print ("id_of_dependent: " ^ id);
@@ -444,7 +446,7 @@ let parse_funcl fcl =
           Hashtbl.add executes (string_of_id i) source_code
       | _ -> ()
     end
-  | _ -> debug_print "FCL_funcl other"
+    | _ -> debug_print "FCL_funcl other"
 
 let json_of_key_operand key op t = "\n{\n" ^ "  \"name\": \"" ^ op ^ "\", \"type\": \"" ^ t ^ "\"\n" ^ "}"
 
