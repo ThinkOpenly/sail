@@ -204,10 +204,11 @@ let rec find_extensions e =
   match e with
   | E_aux (E_app (i, el), _) ->
       debug_print ("E_app " ^ string_of_id i);
-      (* If it's extensionEnabled, we remove the Ext_ prefix (4 characters) *)
       if String.equal (string_of_id i) "extensionEnabled" then (
         List.map (fun exp -> 
           let ext_str = string_of_exp exp in
+          (* extensionEnabled enums are expected to be of the form "Ext_" + extension short name.
+             Remove the "Ext_" prefix and keep extension short name. *)
           "\"" ^ String.sub ext_str 4 (String.length ext_str - 4) ^ "\""
         ) el
       )
@@ -432,7 +433,6 @@ let extract_source_code l =
   | None -> "Error - couldn't locate func"
 
 let parse_funcl fcl =
-    debug_print("fcl " (string_of_arg fcl));
     match fcl with
     | FCL_aux (FCL_funcl (Id_aux (Id id, _), Pat_aux (pat, _)), _) -> begin
       match pat with
@@ -446,7 +446,7 @@ let parse_funcl fcl =
           Hashtbl.add executes (string_of_id i) source_code
       | _ -> ()
     end
-    | _ -> debug_print "FCL_funcl other"
+  | _ -> debug_print "FCL_funcl other"
 
 let json_of_key_operand key op t = "\n{\n" ^ "  \"name\": \"" ^ op ^ "\", \"type\": \"" ^ t ^ "\"\n" ^ "}"
 
