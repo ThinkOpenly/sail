@@ -91,6 +91,7 @@ let formats = Hashtbl.create 997
 let extensions = Hashtbl.create 997
 let mappings = Hashtbl.create 997
 let registers = Hashtbl.create 997
+let instruction_type_to_format = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
@@ -321,6 +322,26 @@ let parse_assembly i mc =
       end
   | _ -> assert false
 
+let handle_fmtencdec_mapping mc =
+  debug_print "handle_fmtencdec_mapping called";
+  match mc with
+  | MCL_aux (MCL_bidir (lhs_mpexp, rhs_mpexp), _) -> begin
+      let lhs_pat =
+        match lhs_mpexp with MPat_aux (MPat_pat pat, _) -> pat | MPat_aux (MPat_when (pat, _), _) -> pat
+      in
+      let rhs_pat =
+        match rhs_mpexp with MPat_aux (MPat_pat pat, _) -> pat | MPat_aux (MPat_when (pat, _), _) -> pat
+      in
+      match (lhs_pat, rhs_pat) with
+      | MP_aux (MP_app (type_id, _), _), MP_aux (MP_app (format_id, _), _) ->
+          let instruction_type = string_of_id type_id in
+          let format = string_of_id format_id in
+          debug_print ("Instruction type: " ^ instruction_type ^ ", format: " ^ format);
+          Hashtbl.add instruction_type_to_format instruction_type format
+      | _ -> ()
+    end
+  | _ -> debug_print "Not an fmtencdec mapping"
+
 let parse_mapcl i mc =
   debug_print ("mapcl " ^ string_of_id i);
   let format =
@@ -332,38 +353,38 @@ let parse_mapcl i mc =
              annot.attrs
           )
   in
-  begin
-    match string_of_id i with
-    | "encdec" | "encdec_compressed" ->
-        debug_print (string_of_id i);
-        parse_encdec i mc format
-    | "assembly" ->
-        debug_print (string_of_id i);
-        parse_assembly i mc
-    | _ -> begin
-        match mc with
-        | MCL_aux (MCL_bidir (MPat_aux (MPat_pat mpl, _), MPat_aux (MPat_pat mpr, _)), (annot, _)) ->
-            debug_print ("MCL_bidir " ^ string_of_id i);
-            let sl = string_list_of_mpat mpl in
-            List.iter (fun s -> debug_print ("L: " ^ s)) sl;
-            let sl = string_list_of_mpat mpr in
-            List.iter (fun s -> debug_print ("R: " ^ s)) sl;
-            Hashtbl.add mappings (string_of_id i) (string_list_of_mpat mpl, string_list_of_mpat mpr);
-            let sl = string_list_of_mpat mpr in
-            List.iter
-              (fun mnemonic ->
-                List.iter
-                  (fun attr ->
-                    match attr with
-                    | _, "name", Some (AD_aux (AD_string name, _)) -> Hashtbl.add names mnemonic name
-                    | _ -> ()
-                  )
-                  annot.attrs
-              )
-              sl
-        | _ -> debug_print "MCL other"
-      end
-  end
+  match string_of_id i with
+  | "fmtencdec" ->
+      debug_print (string_of_id i);
+      handle_fmtencdec_mapping mc
+  | "encdec" | "encdec_compressed" ->
+      debug_print (string_of_id i);
+      parse_encdec i mc format
+  | "assembly" ->
+      debug_print (string_of_id i);
+      parse_assembly i mc
+  | _ -> begin
+      match mc with
+      | MCL_aux (MCL_bidir (MPat_aux (MPat_pat mpl, _), MPat_aux (MPat_pat mpr, _)), (annot, _)) ->
+          debug_print ("MCL_bidir " ^ string_of_id i);
+          let sl_left = string_list_of_mpat mpl in
+          let sl_right = string_list_of_mpat mpr in
+          List.iter (fun s -> debug_print ("L: " ^ s)) sl_left;
+          List.iter (fun s -> debug_print ("R: " ^ s)) sl_right;
+          Hashtbl.add mappings (string_of_id i) (sl_left, sl_right);
+          List.iter
+            (fun mnemonic ->
+              List.iter
+                (fun attr ->
+                  match attr with
+                  | _, "name", Some (AD_aux (AD_string name, _)) -> Hashtbl.add names mnemonic name
+                  | _ -> ()
+                )
+                annot.attrs
+            )
+            sl_right
+      | _ -> debug_print "MCL other"
+    end
 
 let parse_type_union i ucl =
   debug_print ("type_union " ^ string_of_id i);
@@ -703,7 +724,7 @@ let json_of_description k =
 
 let json_of_format k =
   let format =
-    match Hashtbl.find_opt formats k with
+    match Hashtbl.find_opt instruction_type_to_format k with
     | None -> "TBD"
     | Some f -> (
         match f with "" -> "TBD" | s -> String.escaped s
