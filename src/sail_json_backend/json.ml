@@ -204,14 +204,15 @@ let rec find_extensions e =
   match e with
   | E_aux (E_app (i, el), _) ->
       debug_print ("E_app " ^ string_of_id i);
-      if String.equal (string_of_id i) "extensionEnabled" then (
-        List.map (fun exp -> 
-          let ext_str = string_of_exp exp in
-          (* extensionEnabled enums are expected to be of the form "Ext_" + extension short name.
-             Remove the "Ext_" prefix and keep extension short name. *)
-          "\"" ^ String.sub ext_str 4 (String.length ext_str - 4) ^ "\""
-        ) el
-      )
+      if String.equal (string_of_id i) "extensionEnabled" then
+        List.map
+          (fun exp ->
+            let ext_str = string_of_exp exp in
+            (* extensionEnabled enums are expected to be of the form "Ext_" + extension short name.
+               Remove the "Ext_" prefix and keep extension short name. *)
+            "\"" ^ String.sub ext_str 4 (String.length ext_str - 4) ^ "\""
+          )
+          el
       else List.concat (List.map find_extensions el)
   | _ ->
       debug_print "E other";
