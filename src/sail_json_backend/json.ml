@@ -91,6 +91,7 @@ let formats = Hashtbl.create 997
 let extensions = Hashtbl.create 997
 let mappings = Hashtbl.create 997
 let registers = Hashtbl.create 997
+let base_instructions = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
@@ -433,10 +434,51 @@ let parse_funcl fcl =
           debug_print ("id_of_dependent: " ^ id);
           let source_code = extract_source_code (Ast_util.exp_loc e) in
           Hashtbl.add functions id source_code
-      | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) ->
+      | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) -> (
           debug_print ("FCL_funcl execute " ^ string_of_id i);
           let source_code = extract_source_code (Ast_util.exp_loc e) in
-          Hashtbl.add executes (string_of_id i) source_code
+          match id with
+          | "pseudo_of" -> (
+              debug_print ("FCL funcl pseudoinstruction " ^ string_of_id i);
+              match e with
+              | E_aux (E_list exp_list, _) ->
+                  debug_print ("Exp el: " ^ String.concat ", " (List.map string_of_exp exp_list));
+                  List.iter
+                    (fun exp ->
+                      match exp with
+                      | E_aux (E_app (id, el), _) ->
+                          List.iter
+                            (fun inner_exp ->
+                              match inner_exp with
+                              | E_aux (E_app (id_inner, el_inner), _) ->
+                                  List.iteri
+                                    (fun index inner_value ->
+                                      match inner_value with
+                                      | E_aux (E_tuple tuple_list, _) ->
+                                          let args_inner_list = List.map string_of_exp tuple_list in
+                                          debug_print
+                                            ("Adding to hashtable with key: " ^ string_of_id i ^ ", id_inner: "
+                                           ^ string_of_id id_inner ^ ", args_inner_list: ["
+                                           ^ String.concat ", " args_inner_list ^ "]"
+                                            );
+                                          Hashtbl.add base_instructions (string_of_id i)
+                                            (string_of_id id_inner, args_inner_list)
+                                      | _ -> ()
+                                    )
+                                    el_inner
+                              | _ -> ()
+                            )
+                            el
+                      | _ -> ()
+                    )
+                    exp_list
+              | _ -> ()
+            )
+          | "execute" | "pseudo_execute" ->
+              debug_print ("FCL_funcl execute " ^ string_of_id i);
+              Hashtbl.add executes (string_of_id i) source_code
+          | _ -> ()
+        )
       | _ -> ()
     end
   | _ -> debug_print "FCL_funcl other"
