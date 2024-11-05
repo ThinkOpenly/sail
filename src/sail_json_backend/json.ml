@@ -483,6 +483,18 @@ let parse_funcl fcl =
     end
   | _ -> debug_print "FCL_funcl other"
 
+let get_mnemonic id args_list = None
+
+let process_base_instruction () =
+  let mnemonics =
+    Hashtbl.fold
+      (fun k (id, args_list) acc ->
+        match get_mnemonic id args_list with Some mnemonic -> mnemonic :: acc | None -> acc
+      )
+      base_instructions []
+  in
+  mnemonics
+
 let json_of_key_operand key op t = "\n{\n" ^ "  \"name\": \"" ^ op ^ "\", \"type\": \"" ^ t ^ "\"\n" ^ "}"
 
 let json_of_mnemonic m = "\"" ^ m ^ "\""
@@ -832,6 +844,8 @@ let defs { defs; _ } =
       | _ -> debug_print ~printer:prerr_string ""
     )
     defs;
+
+  let mnemonics = process_base_instruction () in
 
   debug_print "TYPES";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ v)) types;
