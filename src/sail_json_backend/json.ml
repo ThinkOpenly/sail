@@ -483,7 +483,28 @@ let parse_funcl fcl =
     end
   | _ -> debug_print "FCL_funcl other"
 
-let get_mnemonic id args_list = None
+let map_arg_to_mnemonic arg id = None
+
+let map_param_to_arg id param args_list = None
+
+let get_mnemonic id args_list =
+  match Hashtbl.find_opt assembly id with
+  | Some (str :: _) ->
+      if Str.string_match (Str.regexp ".+(\\(.*\\))") str 0 then (
+        let param = Str.matched_group 1 str in
+        debug_print ("param: " ^ param);
+        match map_param_to_arg id param args_list with Some arg -> map_arg_to_mnemonic arg id | None -> None
+      )
+      else (
+        match Hashtbl.find_opt assembly_clean id with
+        | Some (mnemonic :: _) when mnemonic = str ->
+            debug_print ("Mnemonic matched: " ^ str);
+            Some str
+        | Some _ -> None
+        | None -> None
+      )
+  | Some [] -> None
+  | None -> None
 
 let process_base_instruction () =
   let mnemonics =
