@@ -485,7 +485,14 @@ let parse_funcl fcl =
 
 let map_arg_to_mnemonic arg id = None
 
-let map_param_to_arg id param args_list = None
+let get_index elem lst = None
+
+let map_param_to_arg id param args_list =
+  match Hashtbl.find_opt inputs id with
+  | Some inputl -> (
+      match get_index param inputl with Some index -> List.nth_opt args_list index | None -> None
+    )
+  | None -> None
 
 let get_mnemonic id args_list =
   match Hashtbl.find_opt assembly id with
