@@ -483,7 +483,16 @@ let parse_funcl fcl =
     end
   | _ -> debug_print "FCL_funcl other"
 
-let map_arg_to_mnemonic arg id = None
+let map_arg_to_mnemonic arg id =
+  List.find_map
+    (fun (enum, mnemonic) ->
+      if List.hd enum = arg then (
+        debug_print ("Matched " ^ List.hd enum ^ " with mnemonic: " ^ List.hd mnemonic);
+        Some (List.hd mnemonic)
+      )
+      else None
+    )
+    (Hashtbl.find_all mappings (String.lowercase_ascii (id ^ "_mnemonic")))
 
 let get_index elem lst =
   List.find_map (fun (i, x) -> if x = elem then Some i else None) (List.mapi (fun i x -> (i, x)) lst)
