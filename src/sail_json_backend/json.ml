@@ -517,11 +517,9 @@ let get_mnemonic id args_list =
         | Some (mnemonic :: _) when mnemonic = str ->
             debug_print ("Mnemonic matched: " ^ str);
             Some str
-        | Some _ -> None
-        | None -> None
+        | _ -> None
       )
-  | Some [] -> None
-  | None -> None
+  | _ -> None
 
 let process_base_instruction () =
   let mnemonics =
