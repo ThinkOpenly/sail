@@ -504,9 +504,10 @@ let map_param_to_arg id param args_list =
   | None -> None
 
 let get_mnemonic id args_list =
+  let str_in_parens = Str.regexp ".+(\\(.*\\))" in
   match Hashtbl.find_opt assembly id with
   | Some (str :: _) ->
-      if Str.string_match (Str.regexp ".+(\\(.*\\))") str 0 then (
+      if Str.string_match str_in_parens str 0 then (
         let param = Str.matched_group 1 str in
         debug_print ("param: " ^ param);
         match map_param_to_arg id param args_list with Some arg -> map_arg_to_mnemonic arg id | None -> None
