@@ -435,8 +435,6 @@ let parse_funcl fcl =
           let source_code = extract_source_code (Ast_util.exp_loc e) in
           Hashtbl.add functions id source_code
       | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) -> (
-          debug_print ("FCL_funcl execute " ^ string_of_id i);
-          let source_code = extract_source_code (Ast_util.exp_loc e) in
           match id with
           | "pseudo_of" -> (
               debug_print ("FCL funcl pseudoinstruction " ^ string_of_id i);
@@ -451,8 +449,8 @@ let parse_funcl fcl =
                             (fun inner_exp ->
                               match inner_exp with
                               | E_aux (E_app (id_inner, el_inner), _) ->
-                                  List.iteri
-                                    (fun index inner_value ->
+                                  List.iter
+                                    (fun inner_value ->
                                       match inner_value with
                                       | E_aux (E_tuple tuple_list, _) ->
                                           let args_inner_list = List.map string_of_exp tuple_list in
@@ -475,6 +473,7 @@ let parse_funcl fcl =
               | _ -> ()
             )
           | "execute" | "pseudo_execute" ->
+              let source_code = extract_source_code (Ast_util.exp_loc e) in
               debug_print ("FCL_funcl execute " ^ string_of_id i);
               Hashtbl.add executes (string_of_id i) source_code
           | _ -> ()
