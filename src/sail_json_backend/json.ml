@@ -493,8 +493,7 @@ let map_arg_to_mnemonic arg id =
     )
     (Hashtbl.find_all mappings (String.lowercase_ascii (id ^ "_mnemonic")))
 
-let get_index elem lst =
-  List.find_map (fun (i, x) -> if x = elem then Some i else None) (List.mapi (fun i x -> (i, x)) lst)
+let get_index elem lst = List.find_index (fun x -> x = elem) lst
 
 let map_param_to_arg id param args_list =
   match Hashtbl.find_opt inputs id with
