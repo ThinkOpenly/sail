@@ -482,16 +482,19 @@ let parse_funcl fcl =
     end
   | _ -> debug_print "FCL_funcl other"
 
-let map_arg_to_mnemonic arg id =
-  List.find_map
-    (fun (enum, mnemonic) ->
-      if List.hd enum = arg then (
-        debug_print ("Matched " ^ List.hd enum ^ " with mnemonic: " ^ List.hd mnemonic);
-        Some (List.hd mnemonic)
-      )
-      else None
+let map_arg_to_mnemonic arg =
+  Hashtbl.fold
+    (fun _ (enum, mnemonic) acc ->
+      match acc with
+      | Some _ -> acc
+      | None ->
+          if List.hd enum = arg then (
+            debug_print ("Matched " ^ List.hd enum ^ " with mnemonic: " ^ List.hd mnemonic);
+            Some (List.hd mnemonic)
+          )
+          else None
     )
-    (Hashtbl.find_all mappings (String.lowercase_ascii (id ^ "_mnemonic")))
+    mappings None
 
 let get_index elem lst = List.find_index (fun x -> x = elem) lst
 
@@ -509,7 +512,7 @@ let get_mnemonic id args_list =
       if Str.string_match str_in_parens str 0 then (
         let param = Str.matched_group 1 str in
         debug_print ("param: " ^ param);
-        match map_param_to_arg id param args_list with Some arg -> map_arg_to_mnemonic arg id | None -> None
+        match map_param_to_arg id param args_list with Some arg -> map_arg_to_mnemonic arg | None -> None
       )
       else (
         match Hashtbl.find_opt assembly_clean id with
