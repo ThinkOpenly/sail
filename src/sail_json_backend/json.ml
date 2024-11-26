@@ -91,6 +91,7 @@ let formats = Hashtbl.create 997
 let extensions = Hashtbl.create 997
 let mappings = Hashtbl.create 997
 let registers = Hashtbl.create 997
+let base_instructions = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
@@ -433,13 +434,104 @@ let parse_funcl fcl =
           debug_print ("id_of_dependent: " ^ id);
           let source_code = extract_source_code (Ast_util.exp_loc e) in
           Hashtbl.add functions id source_code
-      | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) ->
-          debug_print ("FCL_funcl execute " ^ string_of_id i);
-          let source_code = extract_source_code (Ast_util.exp_loc e) in
-          Hashtbl.add executes (string_of_id i) source_code
+      | Pat_exp (P_aux (P_app (i, pl), _), e) | Pat_when (P_aux (P_app (i, pl), _), e, _) -> (
+          match id with
+          | "pseudo_of" -> (
+              debug_print ("FCL funcl pseudoinstruction " ^ string_of_id i);
+              match e with
+              | E_aux (E_list exp_list, _) ->
+                  debug_print ("Exp el: " ^ String.concat ", " (List.map string_of_exp exp_list));
+                  List.iter
+                    (fun exp ->
+                      match exp with
+                      | E_aux (E_app (id, el), _) ->
+                          List.iter
+                            (fun inner_exp ->
+                              match inner_exp with
+                              | E_aux (E_app (id_inner, el_inner), _) ->
+                                  List.iter
+                                    (fun inner_value ->
+                                      match inner_value with
+                                      | E_aux (E_tuple tuple_list, _) ->
+                                          let args_inner_list = List.map string_of_exp tuple_list in
+                                          debug_print
+                                            ("Adding to hashtable with key: " ^ string_of_id i ^ ", id_inner: "
+                                           ^ string_of_id id_inner ^ ", args_inner_list: ["
+                                           ^ String.concat ", " args_inner_list ^ "]"
+                                            );
+                                          Hashtbl.add base_instructions (string_of_id i)
+                                            (string_of_id id_inner, args_inner_list)
+                                      | _ -> ()
+                                    )
+                                    el_inner
+                              | _ -> ()
+                            )
+                            el
+                      | _ -> ()
+                    )
+                    exp_list
+              | _ -> ()
+            )
+          | "execute" | "pseudo_execute" ->
+              let source_code = extract_source_code (Ast_util.exp_loc e) in
+              debug_print ("FCL_funcl execute " ^ string_of_id i);
+              Hashtbl.add executes (string_of_id i) source_code
+          | _ -> ()
+        )
       | _ -> ()
     end
   | _ -> debug_print "FCL_funcl other"
+
+let map_arg_to_mnemonic arg =
+  Hashtbl.fold
+    (fun _ (enum, mnemonic) acc ->
+      match acc with
+      | Some _ -> acc
+      | None ->
+          if List.hd enum = arg then (
+            debug_print ("Matched " ^ List.hd enum ^ " with mnemonic: " ^ List.hd mnemonic);
+            Some (List.hd mnemonic)
+          )
+          else None
+    )
+    mappings None
+
+let get_index elem lst = List.find_index (fun x -> x = elem) lst
+
+let map_param_to_arg id param args_list =
+  match Hashtbl.find_opt inputs id with
+  | Some inputl -> (
+      match get_index param inputl with Some index -> List.nth_opt args_list index | None -> None
+    )
+  | None -> None
+
+let get_mnemonic id args_list =
+  let str_in_parens = Str.regexp ".+(\\(.*\\))" in
+  match Hashtbl.find_opt assembly id with
+  | Some (str :: _) ->
+      if Str.string_match str_in_parens str 0 then (
+        let param = Str.matched_group 1 str in
+        debug_print ("param: " ^ param);
+        match map_param_to_arg id param args_list with Some arg -> map_arg_to_mnemonic arg | None -> None
+      )
+      else (
+        match Hashtbl.find_opt assembly_clean id with
+        | Some (mnemonic :: _) when mnemonic = str ->
+            debug_print ("Mnemonic matched: " ^ str);
+            Some str
+        | _ -> None
+      )
+  | _ -> None
+
+let process_base_instruction () =
+  let mnemonics =
+    Hashtbl.fold
+      (fun k (id, args_list) acc ->
+        match get_mnemonic id args_list with Some mnemonic -> mnemonic :: acc | None -> acc
+      )
+      base_instructions []
+  in
+  mnemonics
 
 let json_of_key_operand key op t = "\n{\n" ^ "  \"name\": \"" ^ op ^ "\", \"type\": \"" ^ t ^ "\"\n" ^ "}"
 
@@ -790,6 +882,8 @@ let defs { defs; _ } =
       | _ -> debug_print ~printer:prerr_string ""
     )
     defs;
+
+  let mnemonics = process_base_instruction () in
 
   debug_print "TYPES";
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ v)) types;
