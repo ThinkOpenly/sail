@@ -116,6 +116,7 @@ http://www.cl.cam.ac.uk/~pes20/sail/.
   (synopsis "Sail to JSON formatting")
   (depends
     (libsail (= :version))
+    (ocaml (>= 5.1.0))
     (omd (and (>= 1.3.1) (< 1.4.0)))))
 
 (package

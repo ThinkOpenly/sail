@@ -16,8 +16,8 @@ jobs:
         include:
           - os: ubuntu-latest
             container: rockylinux:8
-            ocaml_version: 5.0.0
-            opam_cache_key: rocky8-5.0.0
+            ocaml_version: 5.1.0
+            opam_cache_key: rocky8-5.1.0
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
