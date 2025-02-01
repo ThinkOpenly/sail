@@ -91,6 +91,8 @@ let formats = Hashtbl.create 997
 let extensions = Hashtbl.create 997
 let mappings = Hashtbl.create 997
 let registers = Hashtbl.create 997
+let instruction_type_to_format = Hashtbl.create 997
+let type_to_mnemonic_map = Hashtbl.create 997
 
 let debug_print ?(printer = prerr_endline) message = if debug_enabled then printer message else ()
 
@@ -182,18 +184,36 @@ let parse_encdec_mpat mp pb format =
       debug_print ("MP_app " ^ string_of_id app_id);
       Hashtbl.add formats (string_of_id app_id) format;
       let operandl = List.concat (List.map string_list_of_mpat mpl) in
+      List.iter debug_print operandl;
+      debug_print "MCL_bidir (right part)";
       begin
-        List.iter debug_print operandl;
-        debug_print "MCL_bidir (right part)";
-        match pb with
-        | MPat_aux (MPat_pat p, _) ->
-            debug_print "MPat_pat ";
-            List.iter debug_print (string_list_of_mpat p);
-            Hashtbl.add encodings (string_of_id app_id) (string_list_of_mpat p)
-        | MPat_aux (MPat_when (p, e), _) ->
-            debug_print "MPat_when ";
-            List.iter debug_print (string_list_of_mpat p);
-            Hashtbl.add encodings (string_of_id app_id) (string_list_of_mpat p)
+        match List.rev mpl with
+        | mp_last :: _ ->
+          begin match mp_last with
+          | MP_aux (MP_id id, _) ->
+              let key_string =
+                if Hashtbl.mem type_to_mnemonic_map (string_of_id app_id) then
+                  Hashtbl.find type_to_mnemonic_map (string_of_id app_id)
+                else if Hashtbl.mem type_to_mnemonic_map (string_of_id id) then
+                  Hashtbl.find type_to_mnemonic_map (string_of_id id)
+                else
+                  (string_of_id app_id) ^ "-" ^ (string_of_id id)
+              in
+              begin
+                match pb with
+                | MPat_aux (MPat_pat p, _) ->
+                    debug_print "MPat_pat ";
+                    List.iter debug_print (string_list_of_mpat p);
+                    Hashtbl.add encodings key_string (string_list_of_mpat p)
+                | MPat_aux (MPat_when (p, _), _) ->
+                    debug_print "MPat_when ";
+                    List.iter debug_print (string_list_of_mpat p);
+                    Hashtbl.add encodings key_string (string_list_of_mpat p)
+                | _ -> ()
+              end
+          | _ -> ()
+          end
+        | [] -> ()
       end;
       string_of_id app_id
   | _ -> assert false
@@ -321,49 +341,78 @@ let parse_assembly i mc =
       end
   | _ -> assert false
 
+let handle_fmtencdec_mapping mc =
+  debug_print "handle_fmtencdec_mapping called";
+  match mc with
+  | MCL_aux (MCL_bidir (lhs_mpexp, rhs_mpexp), _) ->
+      begin
+        let lhs_pat = match lhs_mpexp with
+          | MPat_aux (MPat_pat pat, _) -> pat
+          | MPat_aux (MPat_when (pat, _), _) -> pat
+        in
+        let rhs_pat = match rhs_mpexp with
+          | MPat_aux (MPat_pat pat, _) -> pat
+          | MPat_aux (MPat_when (pat, _), _) -> pat
+        in
+        match lhs_pat, rhs_pat with
+        | MP_aux (MP_app (type_id, _), _), MP_aux (MP_app (format_id, _), _) ->
+            let instruction_type = string_of_id type_id in
+            let format = string_of_id format_id in
+            Hashtbl.add instruction_type_to_format instruction_type format;
+        | _ -> ()
+      end
+  | _ -> debug_print "Not an fmtencdec mapping"
+
 let parse_mapcl i mc =
-  debug_print ("mapcl " ^ string_of_id i);
+  debug_print ("parse_mapcl " ^ string_of_id i);
   let format =
     match mc with
     | MCL_aux (_, (annot, _)) ->
         String.concat "-"
           (List.map
-             (fun attr -> match attr with _, "format", Some (AD_aux (AD_string s, _)) -> s | _ -> "")
-             annot.attrs
+            (fun attr -> match attr with _, "format", Some (AD_aux (AD_string s, _)) -> s | _ -> "")
+            annot.attrs
           )
   in
-  begin
-    match string_of_id i with
-    | "encdec" | "encdec_compressed" ->
-        debug_print (string_of_id i);
-        parse_encdec i mc format
-    | "assembly" ->
-        debug_print (string_of_id i);
-        parse_assembly i mc
-    | _ -> begin
-        match mc with
-        | MCL_aux (MCL_bidir (MPat_aux (MPat_pat mpl, _), MPat_aux (MPat_pat mpr, _)), (annot, _)) ->
-            debug_print ("MCL_bidir " ^ string_of_id i);
-            let sl = string_list_of_mpat mpl in
-            List.iter (fun s -> debug_print ("L: " ^ s)) sl;
-            let sl = string_list_of_mpat mpr in
-            List.iter (fun s -> debug_print ("R: " ^ s)) sl;
-            Hashtbl.add mappings (string_of_id i) (string_list_of_mpat mpl, string_list_of_mpat mpr);
-            let sl = string_list_of_mpat mpr in
-            List.iter
-              (fun mnemonic ->
-                List.iter
-                  (fun attr ->
-                    match attr with
-                    | _, "name", Some (AD_aux (AD_string name, _)) -> Hashtbl.add names mnemonic name
-                    | _ -> ()
-                  )
-                  annot.attrs
+  match string_of_id i with
+  | "fmtencdec" ->
+      debug_print (string_of_id i);
+      handle_fmtencdec_mapping mc;
+  | "encdec" | "encdec_compressed" ->
+      debug_print (string_of_id i);
+      parse_encdec i mc format;
+  | "assembly" ->
+      debug_print (string_of_id i);
+      parse_assembly i mc;
+  | _ -> begin
+      match mc with
+      | MCL_aux (MCL_bidir (MPat_aux (MPat_pat mpl, _), MPat_aux (MPat_pat mpr, _)), (annot, _)) ->
+          debug_print ("MCL_bidir " ^ string_of_id i);
+          let sl_left = string_list_of_mpat mpl in
+          let sl_right = string_list_of_mpat mpr in
+          List.iter (fun s -> debug_print ("L: " ^ s)) sl_left;
+          List.iter (fun s -> debug_print ("R: " ^ s)) sl_right;
+          Hashtbl.add mappings (string_of_id i) (sl_left, sl_right);
+          if String.ends_with ~suffix:"_mnemonic" (string_of_id i) then
+            List.iter2
+              (fun left right ->
+                Hashtbl.add type_to_mnemonic_map left right
               )
-              sl
-        | _ -> debug_print "MCL other"
-      end
-  end
+              sl_left sl_right;
+          List.iter
+            (fun mnemonic ->
+              List.iter
+                (fun attr ->
+                  match attr with
+                  | _, "name", Some (AD_aux (AD_string name, _)) -> Hashtbl.add names mnemonic name
+                  | _ -> ()
+                )
+                annot.attrs
+            )
+            sl_right
+      | _ -> debug_print "MCL other"
+    end
+;;
 
 let parse_type_union i ucl =
   debug_print ("type_union " ^ string_of_id i);
@@ -680,8 +729,8 @@ let rec string_of_sizeof_field k f =
 
 let json_of_field k f = "{ \"field\": \"" ^ f ^ "\", \"size\": " ^ string_of_sizeof_field k f ^ " }"
 
-let json_of_fields k =
-  match Hashtbl.find_opt encodings k with
+let json_of_fields k mnemonic =
+  match Hashtbl.find_opt encodings mnemonic with
   | None -> ""
   | Some fields -> String.concat ", " (List.map (fun f -> json_of_field k f) fields)
 
@@ -703,7 +752,7 @@ let json_of_description k =
 
 let json_of_format k =
   let format =
-    match Hashtbl.find_opt formats k with
+    match Hashtbl.find_opt instruction_type_to_format k with
     | None -> "TBD"
     | Some f -> (
         match f with "" -> "TBD" | s -> String.escaped s
@@ -719,7 +768,7 @@ let json_of_instruction k v =
   ^ ",\n" ^ "  \"name\": "
   ^ json_of_name k (List.hd v)
   ^ ",\n" ^ "  \"operands\": [ " ^ json_of_operands k ^ " ],\n" ^ "  \"syntax\": " ^ "\"" ^ json_of_syntax k ^ "\",\n"
-  ^ "  \"format\": " ^ json_of_format k ^ ",\n" ^ "  \"fields\": [ " ^ json_of_fields k ^ " ],\n"
+  ^ "  \"format\": " ^ json_of_format k ^ ",\n" ^ "  \"fields\": [ " ^ json_of_fields k (List.hd v) ^ " ],\n"
   ^ "  \"extensions\": [ " ^ json_of_extensions k ^ " ],\n" ^ "  \"function\": " ^ json_of_function k ^ ",\n"
   ^ "  \"description\": " ^ json_of_description k ^ "\n" ^ "}"
 
@@ -825,8 +874,10 @@ let defs { defs; _ } =
   Hashtbl.iter (fun k v -> debug_print (k ^ ":" ^ v)) formats;
   debug_print "MAPPINGS";
   Hashtbl.iter
-    (fun k v -> match v with l, r -> debug_print (k ^ ": " ^ String.concat "," l ^ " <-> " ^ String.concat "," r))
+    (fun k v -> match v with l, r -> debug_print (k ^ ":" ^ String.concat "," l ^ " <-> " ^ String.concat "," r))
     mappings;
+  debug_print "TYPE_TO_MNEMONIC_MAP";
+  Hashtbl.iter (fun k v -> debug_print("TTMP DEBUG KEY: " ^ k ^ " value: " ^ v)) type_to_mnemonic_map;
 
   Hashtbl.iter
     (fun k v ->
@@ -849,7 +900,11 @@ let defs { defs; _ } =
     List.sort (fun l r -> String.compare (List.hd (List.tl l)) (List.hd (List.tl r))) key_mnemonic_map
   in
   print_endline
-    (String.concat ",\n" (List.map (fun a -> json_of_instruction (List.hd a) (List.tl a)) key_mnemonic_sorted));
+    (String.concat ",\n" (List.map (fun a ->
+        let key = List.hd a in
+        let value = List.tl a in
+        json_of_instruction key value
+    ) key_mnemonic_sorted));  
 
   print_endline "  ],";
   print_endline "  \"registers\": ";
@@ -860,11 +915,11 @@ let defs { defs; _ } =
   let format_list = Hashtbl.fold (fun k v accum -> ("\"" ^ v ^ "\"") :: accum) formats [] in
   print_endline
     (String.concat ",\n"
-       (List.fold_right
+        (List.fold_right
           (fun s accum -> if String.equal "\"\"" s then accum else s :: accum)
           (List.sort_uniq String.compare ("\"TBD\"" :: format_list))
           []
-       )
+        )
     );
   print_endline "  ],";
 
@@ -876,13 +931,13 @@ let defs { defs; _ } =
   print_endline "  \"functions\": [";
   print_endline
     (String.concat ",\n"
-       (Hashtbl.fold
-          (fun name source accum ->
-            ("  {\n    \"name\": \"" ^ name ^ "\",\n" ^ "    \"source\": \"" ^ String.escaped source ^ "\"\n  }")
-            :: accum
-          )
-          functions []
-       )
+      (Hashtbl.fold
+        (fun name source accum ->
+          ("  {\n    \"name\": \"" ^ name ^ "\",\n" ^ "    \"source\": \"" ^ String.escaped source ^ "\"\n  }")
+          :: accum
+        )
+        functions []
+      )
     );
   print_endline "  ]";
   print_endline "}"
